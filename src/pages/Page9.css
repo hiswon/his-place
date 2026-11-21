@@ -91,7 +91,7 @@
   margin-bottom: 8px;
 }
 
-.player-item,
+.player-item-a,
 .order-item {
   display: flex;
   justify-content: space-between;

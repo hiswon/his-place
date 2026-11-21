@@ -1696,8 +1696,8 @@ export default function Page9() {
               <label className="setting-label">🧭 입장한 대국자 (2명 입장 시 시작 가능)</label>
               <div className="player-list">
                 {roomPlayers.map((p, idx) => (
-                  <div key={p.id} className="player-item">
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div key={p.id} className="player-item-a">
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '8px',color: '#575757' }}>
                       <span
                         className={`mini-disc-icon large ${
                           p.discColor === 1 ? 'black' : 'white'
