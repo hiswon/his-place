@@ -1697,7 +1697,7 @@ export default function Page9() {
               <div className="player-list">
                 {roomPlayers.map((p, idx) => (
                   <div key={p.id} className="player-item-a">
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '8px',color: '#575757' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <span
                         className={`mini-disc-icon large ${
                           p.discColor === 1 ? 'black' : 'white'
