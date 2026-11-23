@@ -33,7 +33,7 @@ const Navbar: React.FC = () => {
           className="arrow-btn"
           aria-label="Previous Page"
         >
-          {prevPage}◁
+          {prevPage}
         </Link>
 
         {/* 다음 페이지 버튼 */}
@@ -42,7 +42,7 @@ const Navbar: React.FC = () => {
           className="arrow-btn"
           aria-label="Next Page"
         >
-          ▷{nextPage}
+          {nextPage}
         </Link>
       </div>
       <div className="navbar-logo">his Place</div>
