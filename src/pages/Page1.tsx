@@ -3,11 +3,9 @@ import './Page1.css';
 
 const Page1: React.FC = () => {
   return (
-    <div className="page-container page1">
-      <h1>이곳은 즐거움의 공간입니다.</h1>
-      <p>하나님은 당신을 사랑하십니다.</p>
-      <p>하나님은 당신에게 모든 것을 주셨습니다.</p>
-      <p>당신은 그것을 믿으십니까?</p>
+    <div className="his-container page1">
+      <h1>HIS PLACE</h1>
+      <p>「하나님이 세상을 이처럼 사랑하사 독생자를 주셨으니 이는 그를 믿는 자마다 멸망하지 않고 영생을 얻게 하려 하심이라」(요 3:16)</p>
     </div>
   );
 };

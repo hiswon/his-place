@@ -1,7 +1,21 @@
 .page1 {
-  position: relative;
-  top: 60px;
-  left: 40px; 
-  background-color: #e3f2fd;
   color: #1565c0;
+}
+
+.his-container { 
+  align-items:center;
+}
+.his-container h1{
+  font-size: 50px;
+  font-weight: 900;
+  text-align: center;
+  margin-bottom: 18px;
+  color: #0f172a;
+}
+.his-container p{
+  font-weight: 900;
+  text-align: center;
+  margin: 18px;
+  word-break: keep-all;
+  text-wrap: balance;
 }
