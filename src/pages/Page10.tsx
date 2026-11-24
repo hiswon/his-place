@@ -78,7 +78,7 @@ const INITIAL_CHIPS = 10000;
 const DEFAULT_TIMEOUT_SEC = 45;
 
 /**
- * 사진(스크린샷 85)과 100% 동일한 6x6 (36칸) Sequence Dice 보드 숫자 배치
+ * 6x6 (36칸) Sequence Dice 보드 숫자 배치
  * - 네 귀퉁이(0, 5, 30, 35): 2 (주사위 1+1)
  * - 중앙 4칸(14, 15, 20, 21): 12 (주사위 6+6)
  * - 외곽 테두리: 3, 4, 5, 6 나선형 배치
@@ -219,7 +219,6 @@ function createDefaultSeqDiceRoom(roomId: number): NetSeqDiceRoomData {
  * 주사위 눈금 도트 렌더링 컴포넌트
  */
 function DiceFacePipGrid({ value, size = 'md' }: { value: number; size?: 'sm' | 'md' | 'lg' }) {
-  // 3x3 그리드 (0~8) 중 활성화될 점 위치
   const pipMap: Record<number, number[]> = {
     1: [4],
     2: [2, 6],
@@ -266,6 +265,11 @@ export default function Page10() {
   const timeoutHandledRef = useRef<number | null>(null);
   const lastSpokenNoticeRef = useRef<string>('');
   const lastCountdownSpokenRef = useRef<number | null>(null);
+  const roomsRefLatest = useRef<NetSeqDiceRoomData[]>(rooms);
+
+  useEffect(() => {
+    roomsRefLatest.current = rooms;
+  }, [rooms]);
 
   // 단독게임(SOLO) 상태
   const [gameState, setGameState] = useState<
@@ -318,14 +322,14 @@ export default function Page10() {
 
   const audioCtxRef = useRef<AudioContext | null>(null);
 
-  const showToast = (
-    text: string,
-    type: 'info' | 'success' | 'danger' | 'celebrate' = 'info'
-  ) => {
-    setToast({ id: Date.now(), text, type });
-  };
+  const showToast = useCallback(
+    (text: string, type: 'info' | 'success' | 'danger' | 'celebrate' = 'info') => {
+      setToast({ id: Date.now(), text, type });
+    },
+    []
+  );
 
-  const speakKorean = (text: string, interrupt = true) => {
+  const speakKorean = useCallback((text: string, interrupt = true) => {
     if (!text || !('speechSynthesis' in window)) return;
     const cleanText = text.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '').trim();
     if (!cleanText) return;
@@ -337,9 +341,9 @@ export default function Page10() {
     utterance.rate = 1.12;
     utterance.pitch = 1.05;
     window.speechSynthesis.speak(utterance);
-  };
+  }, []);
 
-  const playSound = (kind: 'roll' | 'place' | 'remove' | 'chip' | 'win' | 'tick') => {
+  const playSound = useCallback((kind: 'roll' | 'place' | 'remove' | 'chip' | 'win' | 'tick') => {
     try {
       const AudioCtx =
         window.AudioContext ||
@@ -377,38 +381,47 @@ export default function Page10() {
     } catch {
       // 오디오 차단 예외 무시
     }
-  };
+  }, []);
 
-  const triggerChipAnimation = (playerName: string, amount: number, color: string) => {
-    playSound('chip');
-    const id = Date.now() + Math.random();
-    setChipFlyEffects((prev) => [...prev, { id, playerName, amount, color }]);
-    window.setTimeout(() => {
-      setChipFlyEffects((prev) => prev.filter((item) => item.id !== id));
-    }, 1050);
-  };
+  const triggerChipAnimation = useCallback(
+    (playerName: string, amount: number, color: string) => {
+      playSound('chip');
+      const id = Date.now() + Math.random();
+      setChipFlyEffects((prev) => [...prev, { id, playerName, amount, color }]);
+      window.setTimeout(() => {
+        setChipFlyEffects((prev) => prev.filter((item) => item.id !== id));
+      }, 1050);
+    },
+    [playSound]
+  );
 
-  const triggerFireworksCelebration = (announcementText: string) => {
-    playSound('win');
-    speakKorean(announcementText);
-    setShowFireworks(true);
-    window.setTimeout(() => {
-      setShowFireworks(false);
-    }, 4500);
-  };
+  const triggerFireworksCelebration = useCallback(
+    (announcementText: string) => {
+      playSound('win');
+      speakKorean(announcementText);
+      setShowFireworks(true);
+      window.setTimeout(() => {
+        setShowFireworks(false);
+      }, 4500);
+    },
+    [playSound, speakKorean]
+  );
 
-  const handleCountdownCue = (secLeft: number) => {
-    if (lastCountdownSpokenRef.current === secLeft) return;
-    lastCountdownSpokenRef.current = secLeft;
+  const handleCountdownCue = useCallback(
+    (secLeft: number) => {
+      if (lastCountdownSpokenRef.current === secLeft) return;
+      lastCountdownSpokenRef.current = secLeft;
 
-    if (secLeft === 10) {
-      playSound('tick');
-      speakKorean('10초 남았습니다.', false);
-    } else if (secLeft >= 1 && secLeft <= 5) {
-      playSound('tick');
-      speakKorean(String(secLeft), false);
-    }
-  };
+      if (secLeft === 10) {
+        playSound('tick');
+        speakKorean('10초 남았습니다.', false);
+      } else if (secLeft >= 1 && secLeft <= 5) {
+        playSound('tick');
+        speakKorean(String(secLeft), false);
+      }
+    },
+    [playSound, speakKorean]
+  );
 
   const saveHallOfFameRecord = (
     type: 'SOLO' | 'NET',
@@ -515,7 +528,7 @@ export default function Page10() {
         }
       }
     };
-    ensureRoomsExist();
+    void ensureRoomsExist();
 
     const roomsRef = ref(db, 'seqdice_rooms');
     const unsubscribe = onValue(roomsRef, (snapshot) => {
@@ -588,13 +601,118 @@ export default function Page10() {
     }
   }, [
     appMode,
-    activeNetRoom?.turnNotice,
-    activeNetRoom?.status,
-    activeNetRoom?.winnerAnnouncement,
+    activeNetRoom,
+    triggerFireworksCelebration,
+    speakKorean,
   ]);
 
+  /**
+   * 넷게임 라운드 승리 정산 (5연속 시퀀스 달성 시)
+   */
+  const settleNetSeqDiceWin = (
+    room: NetSeqDiceRoomData,
+    winnerColor: 1 | 2,
+    winLine: number[]
+  ) => {
+    const winner = room.players.find((p) => p.chipColor === winnerColor) || room.players[0];
+    const wonPot = room.pot || 0;
+
+    room.players = room.players.map((p) => {
+      const isWinner = p.id === winner.id;
+      const updatedChips = isWinner ? p.chips + wonPot : p.chips;
+      return {
+        ...p,
+        chips: updatedChips,
+        wins: isWinner ? (p.wins || 0) + 1 : p.wins || 0,
+        isEliminated: updatedChips <= 0,
+      };
+    });
+
+    const winnerObj = room.players.find((p) => p.id === winner.id)!;
+    const anyBusted = room.players.some((p) => p.isEliminated);
+
+    room.winningLine = winLine;
+    room.pot = 0;
+    room.dice = null;
+    room.turnDeadline = null;
+    room.turnNotice = '';
+    room.roundWinnerId = winner.id;
+
+    if (anyBusted) {
+      room.status = 'MATCH_OVER';
+      room.winnerAnnouncement = `👑 최종 우승! ${winner.name}님이 5연속 시퀀스 완성으로 상대 판돈을 모두 소진시켰습니다!`;
+    } else {
+      room.status = 'ROUND_OVER';
+      room.winnerAnnouncement = `🎊 ${winner.name}님 5연속 시퀀스 완성! 판돈 ${wonPot.toLocaleString()}칩 독식! (${winnerObj.wins}승 · ${winnerObj.chips.toLocaleString()}칩)`;
+    }
+
+    saveHallOfFameRecord('NET', {
+      name: winner.name,
+      scoreOrLevel: `${winnerObj.wins}승 · 보유 ${winnerObj.chips.toLocaleString()}칩`,
+    });
+  };
+
+  /**
+   * 넷게임 턴 시간 초과 자동 처리
+   */
+  const handleNetTurnTimeout = useCallback(async (room: NetSeqDiceRoomData) => {
+    const roomRef = ref(db, `seqdice_rooms/room_${room.roomId}`);
+    await runTransaction(roomRef, (roomData) => {
+      if (!roomData) return roomData;
+      const r = roomData as NetSeqDiceRoomData;
+      if (r.status !== 'PLAYING') return r;
+
+      const turnColor: 1 | 2 = r.currentTurn === 2 ? 2 : 1;
+      const playersList = Array.isArray(r.players) ? r.players : [];
+      const actor = playersList.find((p) => p.chipColor === turnColor);
+      const boardCopy: ChipOwner[] = Array.from({ length: 36 }, (_, i) => {
+        const val = r.board?.[i];
+        return val === 1 || val === 2 ? val : 0;
+      });
+
+      let activeDice: [number, number] | null =
+        Array.isArray(r.dice) && r.dice.length === 2
+          ? [Number(r.dice[0]), Number(r.dice[1])]
+          : null;
+
+      if (!activeDice) {
+        activeDice = [Math.floor(Math.random() * 6) + 1, Math.floor(Math.random() * 6) + 1];
+      }
+      const sum = activeDice[0] + activeDice[1];
+      const targets = getValidTargetsForRoll(boardCopy, sum, turnColor);
+
+      if (targets.length > 0) {
+        const chosenIdx = targets[Math.floor(Math.random() * targets.length)];
+        if (sum === 10) boardCopy[chosenIdx] = 0;
+        else boardCopy[chosenIdx] = turnColor;
+        r.board = boardCopy;
+        r.lastMoveIdx = chosenIdx;
+      }
+
+      r.dice = null;
+      const winLine = findWinningSequence(boardCopy, turnColor);
+      if (winLine) {
+        settleNetSeqDiceWin(r, turnColor, winLine);
+        return r;
+      }
+
+      const nextColor: 1 | 2 = turnColor === 1 ? 2 : 1;
+      const nextPlayer = playersList.find((p) => p.chipColor === nextColor);
+      r.currentTurn = nextColor;
+      r.turnDeadline = Date.now() + (r.baseTimeout || DEFAULT_TIMEOUT_SEC) * 1000;
+      r.turnNotice = `⏰ 시간 초과로 ${actor?.name ?? '플레이어'}님 자동 진행! 👉 ${nextPlayer?.name ?? '상대'}님 차례!`;
+      return r;
+    });
+  }, []);
+
+  // 넷게임 카운트다운 타이머 (프리미티브 값만 의존성에 배치하여 트랜잭션 경합 방지)
+  const netRoomId = activeNetRoom?.roomId ?? null;
+  const netRoomStatus = activeNetRoom?.status ?? null;
+  const netTurnDeadline = activeNetRoom?.turnDeadline ?? null;
+  const netWaitingSince = activeNetRoom?.waitingSince ?? null;
+
   useEffect(() => {
-    if (appMode !== 'NET_ROOM' || !activeNetRoom) {
+    if (appMode !== 'NET_ROOM' || !netRoomId) {
       setRemainingSeconds(DEFAULT_TIMEOUT_SEC);
       setWaitingCountdownSec(420);
       return;
@@ -603,14 +721,14 @@ export default function Page10() {
     const timer = window.setInterval(async () => {
       const now = Date.now();
 
-      if (activeNetRoom.status === 'WAITING' && activeNetRoom.waitingSince) {
-        const elapsedSec = (now - activeNetRoom.waitingSince) / 1000;
+      if (netRoomStatus === 'WAITING' && netWaitingSince) {
+        const elapsedSec = (now - netWaitingSince) / 1000;
         const leftSec = Math.max(0, 420 - Math.floor(elapsedSec));
         setWaitingCountdownSec(leftSec);
 
         if (elapsedSec >= 425) {
-          const roomRef = ref(db, `seqdice_rooms/room_${activeNetRoom.roomId}`);
-          await set(roomRef, createDefaultSeqDiceRoom(activeNetRoom.roomId));
+          const roomRef = ref(db, `seqdice_rooms/room_${netRoomId}`);
+          await set(roomRef, createDefaultSeqDiceRoom(netRoomId));
           showToast('⏳ 대기 시간이 7분을 초과하여 방이 초기화되었습니다.', 'info');
           setSelectedRoomId(null);
           setAppMode('NET_LOBBY');
@@ -618,47 +736,32 @@ export default function Page10() {
         }
       }
 
-      if (activeNetRoom.status === 'PLAYING' && activeNetRoom.turnDeadline) {
-        const diff = Math.max(0, Math.ceil((activeNetRoom.turnDeadline - now) / 1000));
+      if (netRoomStatus === 'PLAYING' && netTurnDeadline) {
+        const diff = Math.max(0, Math.ceil((netTurnDeadline - now) / 1000));
         setRemainingSeconds(diff);
         handleCountdownCue(diff);
 
-        if (diff === 0 && timeoutHandledRef.current !== activeNetRoom.turnDeadline) {
-          timeoutHandledRef.current = activeNetRoom.turnDeadline;
-          handleNetTurnTimeout(activeNetRoom);
+        if (diff === 0 && timeoutHandledRef.current !== netTurnDeadline) {
+          timeoutHandledRef.current = netTurnDeadline;
+          const latestRoom = roomsRefLatest.current.find((r) => r.roomId === netRoomId);
+          if (latestRoom) {
+            void handleNetTurnTimeout(latestRoom);
+          }
         }
       }
     }, 300);
 
     return () => window.clearInterval(timer);
-  }, [appMode, activeNetRoom]);
-
-  // 단독게임(SOLO) 타이머
-  useEffect(() => {
-    if (appMode !== 'SOLO' || gameState !== 'PLAYING') return;
-
-    const timer = window.setInterval(() => {
-      setSoloRemainingSec((prev) => {
-        const next = Math.max(0, prev - 1);
-        handleCountdownCue(next);
-        if (next === 0) {
-          if (!soloDice) {
-            handleSoloRollDice(true);
-          } else {
-            const sum = soloDice[0] + soloDice[1];
-            const validTargets = getValidTargetsForRoll(soloBoard, sum, soloTurn);
-            if (validTargets.length > 0) {
-              const randIdx = validTargets[Math.floor(Math.random() * validTargets.length)];
-              handleSoloCellClick(randIdx, true);
-            }
-          }
-        }
-        return next;
-      });
-    }, 1000);
-
-    return () => window.clearInterval(timer);
-  }, [appMode, gameState, soloDice, soloBoard, soloTurn, soloTimeoutSec]);
+  }, [
+    appMode,
+    netRoomId,
+    netRoomStatus,
+    netTurnDeadline,
+    netWaitingSince,
+    handleCountdownCue,
+    handleNetTurnTimeout,
+    showToast,
+  ]);
 
   const handleEnterRoomSubmit = async (asSpectator = false) => {
     if (!joinModalRoom) return;
@@ -726,7 +829,7 @@ export default function Page10() {
       setAppMode('NET_ROOM');
 
       if (joinResultType === 'SPECTATOR') {
-        showToast('👀 관전모드로 입장했습니다!', 'info');
+        showToast('👀 관망모드로 입장했습니다!', 'info');
       } else if (joinResultType === 'WAITLIST') {
         showToast('⏳ 다음 판 예약자로 등록되었습니다!', 'info');
       }
@@ -828,7 +931,7 @@ export default function Page10() {
       room.dice = null;
       room.lastMoveIdx = null;
       room.winningLine = [];
-      room.turnDeadline = Date.now() + room.baseTimeout * 1000;
+      room.turnDeadline = Date.now() + (room.baseTimeout || DEFAULT_TIMEOUT_SEC) * 1000;
       room.winnerAnnouncement = '';
       room.roundWinnerId = null;
       room.turnNotice = `🎲 [${nextRound}국] 동일 판돈 ${equalStake.toLocaleString()}칩 베팅! 🔴레드 ${preparedPlayers[0].name}님 주사위를 굴려주세요!`;
@@ -841,60 +944,27 @@ export default function Page10() {
   };
 
   /**
-   * 넷게임 라운드 승리 정산 (5연속 시퀀스 달성 시)
-   */
-  const settleNetSeqDiceWin = (
-    room: NetSeqDiceRoomData,
-    winnerColor: 1 | 2,
-    winLine: number[]
-  ) => {
-    const winner = room.players.find((p) => p.chipColor === winnerColor) || room.players[0];
-    const wonPot = room.pot || 0;
-
-    room.players = room.players.map((p) => {
-      const isWinner = p.id === winner.id;
-      const updatedChips = isWinner ? p.chips + wonPot : p.chips;
-      return {
-        ...p,
-        chips: updatedChips,
-        wins: isWinner ? (p.wins || 0) + 1 : p.wins || 0,
-        isEliminated: updatedChips <= 0,
-      };
-    });
-
-    const winnerObj = room.players.find((p) => p.id === winner.id)!;
-    const anyBusted = room.players.some((p) => p.isEliminated);
-
-    room.winningLine = winLine;
-    room.pot = 0;
-    room.dice = null;
-    room.turnDeadline = null;
-    room.turnNotice = '';
-    room.roundWinnerId = winner.id;
-
-    if (anyBusted) {
-      room.status = 'MATCH_OVER';
-      room.winnerAnnouncement = `👑 최종 우승! ${winner.name}님이 5연속 시퀀스 완성으로 상대 판돈을 모두 소진시켰습니다!`;
-    } else {
-      room.status = 'ROUND_OVER';
-      room.winnerAnnouncement = `🎊 ${winner.name}님 5연속 시퀀스 완성! 판돈 ${wonPot.toLocaleString()}칩 독식! (${winnerObj.wins}승 · ${winnerObj.chips.toLocaleString()}칩)`;
-    }
-
-    saveHallOfFameRecord('NET', {
-      name: winner.name,
-      scoreOrLevel: `${winnerObj.wins}승 · 보유 ${winnerObj.chips.toLocaleString()}칩`,
-    });
-  };
-
-  /**
-   * 넷게임 주사위 굴리기
+   * 넷게임 주사위 굴리기 (트랜잭션 안정화 및 오류 피드백 강화)
    */
   const handleNetRollDice = async () => {
-    if (!activeNetRoom || activeNetRoom.status !== 'PLAYING' || activeNetRoom.dice !== null) {
+    if (!activeNetRoom) return;
+    if (activeNetRoom.status !== 'PLAYING') {
+      showToast('현재 게임 진행 중이 아닙니다.', 'info');
       return;
     }
-    const actor = activeNetRoom.players.find((p) => p.chipColor === activeNetRoom.currentTurn);
-    if (!actor || actor.id !== mySessionId) return;
+    if (activeNetRoom.dice !== null) {
+      showToast('이미 주사위를 굴렸습니다. 보드에서 칸을 선택하세요!', 'info');
+      return;
+    }
+
+    const roomPlayers = activeNetRoom.players || [];
+    const amISpectator = (activeNetRoom.spectators || []).some((s) => s.id === mySessionId);
+    const activeTurnPlayer = roomPlayers.find((p) => p.chipColor === activeNetRoom.currentTurn);
+
+    if (amISpectator || !activeTurnPlayer || activeTurnPlayer.id !== mySessionId) {
+      showToast('내 차례가 아닙니다.', 'danger');
+      return;
+    }
 
     playSound('roll');
     setIsRollingAnim(true);
@@ -905,53 +975,70 @@ export default function Page10() {
     const sum = d1 + d2;
 
     const roomRef = ref(db, `seqdice_rooms/room_${activeNetRoom.roomId}`);
-    await runTransaction(roomRef, (roomData) => {
-      if (!roomData) return roomData;
-      const room = roomData as NetSeqDiceRoomData;
-      if (room.status !== 'PLAYING' || room.dice !== null) return room;
 
-      const turnColor = room.currentTurn;
-      const currentActor = room.players.find((p) => p.chipColor === turnColor);
-      if (!currentActor || currentActor.id !== mySessionId) return room;
+    try {
+      const txResult = await runTransaction(roomRef, (roomData) => {
+        if (!roomData) return roomData;
+        const room = roomData as NetSeqDiceRoomData;
 
-      const boardCopy: ChipOwner[] = Array.from({ length: 36 }, (_, i) =>
-        room.board?.[i] === 1 || room.board?.[i] === 2 ? room.board[i] : 0
-      );
-      const validTargets = getValidTargetsForRoll(boardCopy, sum, turnColor);
+        if (room.status !== 'PLAYING') return room;
+        if (Array.isArray(room.dice) && room.dice.length === 2) return room;
 
-      if (validTargets.length === 0) {
-        // 2나 12가 나왔는데 네 귀퉁이/중앙이 이미 다 차 있는 경우 보너스 턴으로 한 번 더 굴림!
-        if (sum === 2 || sum === 12) {
-          room.dice = null;
-          room.turnDeadline = Date.now() + room.baseTimeout * 1000;
-          room.turnNotice = `🎲 ${currentActor.name}님 주사위 [${d1}+${d2}=${sum}]! 보너스 턴으로 한 번 더 굴립니다!`;
-        } else {
-          // 배치할 빈 칸(또는 10일 때 제거할 상대 칩)이 없으면 자동 턴 넘김
-          const nextColor: 1 | 2 = turnColor === 1 ? 2 : 1;
-          const nextPlayer = room.players.find((p) => p.chipColor === nextColor);
-          room.dice = null;
-          room.currentTurn = nextColor;
-          room.turnDeadline = Date.now() + room.baseTimeout * 1000;
-          room.turnNotice = `🎲 ${currentActor.name}님 [${d1}+${d2}=${sum}] 나왔으나 선택 가능한 칸이 없어 👉 ${nextPlayer?.name}님 차례로 넘어갑니다!`;
+        const turnColor: 1 | 2 = room.currentTurn === 2 ? 2 : 1;
+        const playersList = Array.isArray(room.players) ? room.players : [];
+        const currentActor = playersList.find((p) => p.chipColor === turnColor);
+
+        if (!currentActor || currentActor.id !== mySessionId) {
+          return room;
         }
+
+        const boardCopy: ChipOwner[] = Array.from({ length: 36 }, (_, i) => {
+          const val = room.board?.[i];
+          return val === 1 || val === 2 ? val : 0;
+        });
+
+        const validTargets = getValidTargetsForRoll(boardCopy, sum, turnColor);
+        const nextDeadline = Date.now() + (room.baseTimeout || DEFAULT_TIMEOUT_SEC) * 1000;
+
+        if (validTargets.length === 0) {
+          if (sum === 2 || sum === 12) {
+            room.dice = null;
+            room.turnDeadline = nextDeadline;
+            room.turnNotice = `🎲 ${currentActor.name}님 주사위 [${d1}+${d2}=${sum}]! 보너스 턴으로 한 번 더 굴립니다!`;
+          } else {
+            const nextColor: 1 | 2 = turnColor === 1 ? 2 : 1;
+            const nextPlayer = playersList.find((p) => p.chipColor === nextColor);
+            room.dice = null;
+            room.currentTurn = nextColor;
+            room.turnDeadline = nextDeadline;
+            room.turnNotice = `🎲 ${currentActor.name}님 [${d1}+${d2}=${sum}] 나왔으나 선택 가능한 칸이 없어 👉 ${nextPlayer?.name ?? '상대'}님 차례로 넘어갑니다!`;
+          }
+          return room;
+        }
+
+        room.dice = [d1, d2];
+        room.turnDeadline = nextDeadline;
+
+        if (sum === 10) {
+          room.turnNotice = `🎲 [${d1}+${d2}=10] REMOVE CHIP! 상대방 칩 하나를 눌러 제거하세요!`;
+        } else if (sum === 11) {
+          room.turnNotice = `🎲 [${d1}+${d2}=11] WILD! 보드의 빈 칸 아무 곳이나 눌러 칩을 놓으세요!`;
+        } else if (sum === 2 || sum === 12) {
+          room.turnNotice = `🎲 [${d1}+${d2}=${sum}] 보너스 칸 배치 후 주사위를 한 번 더 굴립니다!`;
+        } else {
+          room.turnNotice = `🎲 ${currentActor.name}님 주사위 [${d1}+${d2}=${sum}]! 반짝이는 [${sum}] 칸을 선택하세요.`;
+        }
+
         return room;
+      });
+
+      if (!txResult.committed) {
+        showToast('차례 정보 동기화 중입니다. 잠시 후 다시 눌러주세요.', 'info');
       }
-
-      room.dice = [d1, d2];
-      room.turnDeadline = Date.now() + room.baseTimeout * 1000;
-
-      if (sum === 10) {
-        room.turnNotice = `🎲 [${d1}+${d2}=10] REMOVE CHIP! 상대방 칩 하나를 눌러 제거하세요!`;
-      } else if (sum === 11) {
-        room.turnNotice = `🎲 [${d1}+${d2}=11] WILD! 보드의 빈 칸 아무 곳이나 눌러 칩을 놓으세요!`;
-      } else if (sum === 2 || sum === 12) {
-        room.turnNotice = `🎲 [${d1}+${d2}=${sum}] 보너스 칸 배치 후 주사위를 한 번 더 굴립니다!`;
-      } else {
-        room.turnNotice = `🎲 ${currentActor.name}님 주사위 [${d1}+${d2}=${sum}]! 반짝이는 [${sum}] 칸을 선택하세요.`;
-      }
-
-      return room;
-    });
+    } catch (err) {
+      console.error('주사위 굴리기 트랜잭션 실패:', err);
+      showToast('Firebase 업데이트 중 오류가 발생했습니다.', 'danger');
+    }
   };
 
   /**
@@ -959,7 +1046,9 @@ export default function Page10() {
    */
   const handleNetCellClick = async (idx: number) => {
     if (!activeNetRoom || activeNetRoom.status !== 'PLAYING' || !activeNetRoom.dice) return;
-    const actor = activeNetRoom.players.find((p) => p.chipColor === activeNetRoom.currentTurn);
+    const actor = (activeNetRoom.players || []).find(
+      (p) => p.chipColor === activeNetRoom.currentTurn
+    );
     if (!actor || actor.id !== mySessionId) return;
 
     const sum = activeNetRoom.dice[0] + activeNetRoom.dice[1];
@@ -976,105 +1065,69 @@ export default function Page10() {
     playSound(sum === 10 ? 'remove' : 'place');
     const roomRef = ref(db, `seqdice_rooms/room_${activeNetRoom.roomId}`);
 
-    await runTransaction(roomRef, (roomData) => {
-      if (!roomData) return roomData;
-      const room = roomData as NetSeqDiceRoomData;
-      if (room.status !== 'PLAYING' || !room.dice) return room;
+    try {
+      await runTransaction(roomRef, (roomData) => {
+        if (!roomData) return roomData;
+        const room = roomData as NetSeqDiceRoomData;
+        if (room.status !== 'PLAYING' || !Array.isArray(room.dice) || room.dice.length !== 2) {
+          return room;
+        }
 
-      const turnColor = room.currentTurn;
-      const currentActor = room.players.find((p) => p.chipColor === turnColor);
-      if (!currentActor || currentActor.id !== mySessionId) return room;
+        const turnColor: 1 | 2 = room.currentTurn === 2 ? 2 : 1;
+        const playersList = Array.isArray(room.players) ? room.players : [];
+        const currentActor = playersList.find((p) => p.chipColor === turnColor);
+        if (!currentActor || currentActor.id !== mySessionId) return room;
 
-      const rollSum = room.dice[0] + room.dice[1];
-      const boardCopy: ChipOwner[] = Array.from({ length: 36 }, (_, i) =>
-        room.board?.[i] === 1 || room.board?.[i] === 2 ? room.board[i] : 0
-      );
-      const targets = getValidTargetsForRoll(boardCopy, rollSum, turnColor);
-      if (!targets.includes(idx)) return room;
+        const rollSum = Number(room.dice[0]) + Number(room.dice[1]);
+        const boardCopy: ChipOwner[] = Array.from({ length: 36 }, (_, i) => {
+          const val = room.board?.[i];
+          return val === 1 || val === 2 ? val : 0;
+        });
+        const targets = getValidTargetsForRoll(boardCopy, rollSum, turnColor);
+        if (!targets.includes(idx)) return room;
 
-      if (rollSum === 10) {
-        boardCopy[idx] = 0; // 상대 칩 제거
-      } else {
-        boardCopy[idx] = turnColor; // 내 칩 배치
-      }
+        if (rollSum === 10) {
+          boardCopy[idx] = 0; // 상대 칩 제거
+        } else {
+          boardCopy[idx] = turnColor; // 내 칩 배치
+        }
 
-      room.board = boardCopy;
-      room.lastMoveIdx = idx;
-      room.dice = null;
+        room.board = boardCopy;
+        room.lastMoveIdx = idx;
+        room.dice = null;
 
-      // 5연속 시퀀스 승리 판정
-      const winLine = findWinningSequence(boardCopy, turnColor);
-      if (winLine) {
-        settleNetSeqDiceWin(room, turnColor, winLine);
+        // 5연속 시퀀스 승리 판정
+        const winLine = findWinningSequence(boardCopy, turnColor);
+        if (winLine) {
+          settleNetSeqDiceWin(room, turnColor, winLine);
+          return room;
+        }
+
+        const nextDeadline = Date.now() + (room.baseTimeout || DEFAULT_TIMEOUT_SEC) * 1000;
+
+        // 2 또는 12는 한 번 더 주사위 굴리기 보너스!
+        if (rollSum === 2 || rollSum === 12) {
+          room.currentTurn = turnColor;
+          room.turnDeadline = nextDeadline;
+          room.turnNotice = `✨ [${rollSum}] 보너스! ${currentActor.name}님이 주사위를 한 번 더 굴립니다!`;
+          return room;
+        }
+
+        const nextColor: 1 | 2 = turnColor === 1 ? 2 : 1;
+        const nextPlayer = playersList.find((p) => p.chipColor === nextColor);
+        room.currentTurn = nextColor;
+        room.turnDeadline = nextDeadline;
+        room.turnNotice =
+          rollSum === 10
+            ? `💥 ${currentActor.name}님이 상대 칩 제거 완료! 👉 ${nextPlayer?.name ?? '상대'}님 주사위를 굴려주세요!`
+            : `✅ ${currentActor.name}님 [${BOARD_NUMBERS[idx]}] 칸 배치 완료! 👉 ${nextPlayer?.name ?? '상대'}님 주사위를 굴려주세요!`;
+
         return room;
-      }
-
-      // 2 또는 12는 한 번 더 주사위 굴리기 보너스!
-      if (rollSum === 2 || rollSum === 12) {
-        room.currentTurn = turnColor;
-        room.turnDeadline = Date.now() + room.baseTimeout * 1000;
-        room.turnNotice = `✨ [${rollSum}] 보너스! ${currentActor.name}님이 주사위를 한 번 더 굴립니다!`;
-        return room;
-      }
-
-      const nextColor: 1 | 2 = turnColor === 1 ? 2 : 1;
-      const nextPlayer = room.players.find((p) => p.chipColor === nextColor);
-      room.currentTurn = nextColor;
-      room.turnDeadline = Date.now() + room.baseTimeout * 1000;
-      room.turnNotice =
-        rollSum === 10
-          ? `💥 ${currentActor.name}님이 상대 칩 제거 완료! 👉 ${nextPlayer?.name}님 주사위를 굴려주세요!`
-          : `✅ ${currentActor.name}님 [${BOARD_NUMBERS[idx]}] 칸 배치 완료! 👉 ${nextPlayer?.name}님 주사위를 굴려주세요!`;
-
-      return room;
-    });
-  };
-
-  /**
-   * 넷게임 턴 시간 초과 자동 처리
-   */
-  const handleNetTurnTimeout = async (room: NetSeqDiceRoomData) => {
-    const roomRef = ref(db, `seqdice_rooms/room_${room.roomId}`);
-    await runTransaction(roomRef, (roomData) => {
-      if (!roomData) return roomData;
-      const r = roomData as NetSeqDiceRoomData;
-      if (r.status !== 'PLAYING') return r;
-
-      const turnColor = r.currentTurn;
-      const actor = r.players.find((p) => p.chipColor === turnColor);
-      const boardCopy: ChipOwner[] = Array.from({ length: 36 }, (_, i) =>
-        r.board?.[i] === 1 || r.board?.[i] === 2 ? r.board[i] : 0
-      );
-
-      let activeDice = r.dice;
-      if (!activeDice) {
-        activeDice = [Math.floor(Math.random() * 6) + 1, Math.floor(Math.random() * 6) + 1];
-      }
-      const sum = activeDice[0] + activeDice[1];
-      const targets = getValidTargetsForRoll(boardCopy, sum, turnColor);
-
-      if (targets.length > 0) {
-        const chosenIdx = targets[Math.floor(Math.random() * targets.length)];
-        if (sum === 10) boardCopy[chosenIdx] = 0;
-        else boardCopy[chosenIdx] = turnColor;
-        r.board = boardCopy;
-        r.lastMoveIdx = chosenIdx;
-      }
-
-      r.dice = null;
-      const winLine = findWinningSequence(boardCopy, turnColor);
-      if (winLine) {
-        settleNetSeqDiceWin(r, turnColor, winLine);
-        return r;
-      }
-
-      const nextColor: 1 | 2 = turnColor === 1 ? 2 : 1;
-      const nextPlayer = r.players.find((p) => p.chipColor === nextColor);
-      r.currentTurn = nextColor;
-      r.turnDeadline = Date.now() + r.baseTimeout * 1000;
-      r.turnNotice = `⏰ 시간 초과로 ${actor?.name}님 자동 진행! 👉 ${nextPlayer?.name}님 차례!`;
-      return r;
-    });
+      });
+    } catch (err) {
+      console.error('칸 선택 트랜잭션 오류:', err);
+      showToast('보드 동기화 중 오류가 발생했습니다.', 'danger');
+    }
   };
 
   const handleLeaveNetRoom = async () => {
@@ -1173,141 +1226,197 @@ export default function Page10() {
     setGameState('PLAYING');
   };
 
-  const settleSoloSeqDiceWin = (winnerColor: 1 | 2, winLine: number[]) => {
-    const winner = soloPlayers.find((p) => p.chipColor === winnerColor) || soloPlayers[0];
-    const settledPlayers = soloPlayers.map((p) => {
-      const isWinner = p.id === winner.id;
-      const updatedChips = isWinner ? p.chips + soloPot : p.chips;
-      return {
-        ...p,
-        chips: updatedChips,
-        wins: isWinner ? p.wins + 1 : p.wins,
-        isEliminated: updatedChips <= 0,
-      };
-    });
+  const settleSoloSeqDiceWin = useCallback(
+    (winnerColor: 1 | 2, winLine: number[]) => {
+      const winner = soloPlayers.find((p) => p.chipColor === winnerColor) || soloPlayers[0];
+      const settledPlayers = soloPlayers.map((p) => {
+        const isWinner = p.id === winner.id;
+        const updatedChips = isWinner ? p.chips + soloPot : p.chips;
+        return {
+          ...p,
+          chips: updatedChips,
+          wins: isWinner ? p.wins + 1 : p.wins,
+          isEliminated: updatedChips <= 0,
+        };
+      });
 
-    const winnerObj = settledPlayers.find((p) => p.id === winner.id)!;
-    const anyBusted = settledPlayers.some((p) => p.isEliminated);
+      const winnerObj = settledPlayers.find((p) => p.id === winner.id)!;
+      const anyBusted = settledPlayers.some((p) => p.isEliminated);
 
-    const announcement = anyBusted
-      ? `👑 최종 우승! ${winner.name}님이 5연속 시퀀스를 완성하여 상대 판돈을 모두 소진시켰습니다!`
-      : `🎊 ${winner.name}님 5연속 시퀀스 완성! 판돈 ${soloPot.toLocaleString()}칩 독식! (${winnerObj.wins}승 · ${winnerObj.chips.toLocaleString()}칩)`;
+      const announcement = anyBusted
+        ? `👑 최종 우승! ${winner.name}님이 5연속 시퀀스를 완성하여 상대 판돈을 모두 소진시켰습니다!`
+        : `🎊 ${winner.name}님 5연속 시퀀스 완성! 판돈 ${soloPot.toLocaleString()}칩 독식! (${winnerObj.wins}승 · ${winnerObj.chips.toLocaleString()}칩)`;
 
-    setSoloPlayers(settledPlayers);
-    setSoloWinningLine(winLine);
-    setSoloPot(0);
-    setSoloDice(null);
-    setTurnNotice('');
-    setWinnerAnnouncement(announcement);
-    setGameState(anyBusted ? 'MATCH_OVER' : 'ROUND_OVER');
-    triggerFireworksCelebration(announcement);
+      setSoloPlayers(settledPlayers);
+      setSoloWinningLine(winLine);
+      setSoloPot(0);
+      setSoloDice(null);
+      setTurnNotice('');
+      setWinnerAnnouncement(announcement);
+      setGameState(anyBusted ? 'MATCH_OVER' : 'ROUND_OVER');
+      triggerFireworksCelebration(announcement);
 
-    saveHallOfFameRecord('SOLO', {
-      name: winner.name,
-      scoreOrLevel: `${winnerObj.wins}승 · 보유 ${winnerObj.chips.toLocaleString()}칩`,
-    });
-  };
+      saveHallOfFameRecord('SOLO', {
+        name: winner.name,
+        scoreOrLevel: `${winnerObj.wins}승 · 보유 ${winnerObj.chips.toLocaleString()}칩`,
+      });
+    },
+    [soloPlayers, soloPot, triggerFireworksCelebration]
+  );
 
-  const handleSoloRollDice = (isAuto = false) => {
-    if (gameState !== 'PLAYING' || soloDice !== null) return;
+  const handleSoloRollDice = useCallback(
+    (isAuto = false) => {
+      if (gameState !== 'PLAYING' || soloDice !== null) return;
 
-    playSound('roll');
-    setIsRollingAnim(true);
-    window.setTimeout(() => setIsRollingAnim(false), 380);
+      playSound('roll');
+      setIsRollingAnim(true);
+      window.setTimeout(() => setIsRollingAnim(false), 380);
 
-    const d1 = Math.floor(Math.random() * 6) + 1;
-    const d2 = Math.floor(Math.random() * 6) + 1;
-    const sum = d1 + d2;
-    const actor = soloPlayers.find((p) => p.chipColor === soloTurn)!;
-    const validTargets = getValidTargetsForRoll(soloBoard, sum, soloTurn);
+      const d1 = Math.floor(Math.random() * 6) + 1;
+      const d2 = Math.floor(Math.random() * 6) + 1;
+      const sum = d1 + d2;
+      const actor = soloPlayers.find((p) => p.chipColor === soloTurn)!;
+      const validTargets = getValidTargetsForRoll(soloBoard, sum, soloTurn);
 
-    setSoloRemainingSec(soloTimeoutSec);
-    lastCountdownSpokenRef.current = null;
+      setSoloRemainingSec(soloTimeoutSec);
+      lastCountdownSpokenRef.current = null;
 
-    if (validTargets.length === 0) {
-      if (sum === 2 || sum === 12) {
-        const notice = `🎲 ${actor.name}님 주사위 [${d1}+${d2}=${sum}]! 보너스 턴으로 한 번 더 굴립니다!`;
-        setSoloDice(null);
-        setTurnNotice(notice);
-        speakKorean(notice);
-      } else {
-        const nextColor: 1 | 2 = soloTurn === 1 ? 2 : 1;
-        const nextPlayer = soloPlayers.find((p) => p.chipColor === nextColor)!;
-        const notice = `🎲 ${actor.name}님 [${d1}+${d2}=${sum}] 나왔으나 선택 가능한 칸이 없어 👉 ${nextPlayer.name}님 차례로 넘어갑니다!`;
-        setSoloDice(null);
-        setSoloTurn(nextColor);
-        setTurnNotice(notice);
-        speakKorean(notice);
+      if (validTargets.length === 0) {
+        if (sum === 2 || sum === 12) {
+          const notice = `🎲 ${actor.name}님 주사위 [${d1}+${d2}=${sum}]! 보너스 턴으로 한 번 더 굴립니다!`;
+          setSoloDice(null);
+          setTurnNotice(notice);
+          speakKorean(notice);
+        } else {
+          const nextColor: 1 | 2 = soloTurn === 1 ? 2 : 1;
+          const nextPlayer = soloPlayers.find((p) => p.chipColor === nextColor)!;
+          const notice = `🎲 ${actor.name}님 [${d1}+${d2}=${sum}] 나왔으나 선택 가능한 칸이 없어 👉 ${nextPlayer.name}님 차례로 넘어갑니다!`;
+          setSoloDice(null);
+          setSoloTurn(nextColor);
+          setTurnNotice(notice);
+          speakKorean(notice);
+        }
+        return;
       }
-      return;
-    }
 
-    setSoloDice([d1, d2]);
-    const prefix = isAuto ? '⏰ 자동 주사위! ' : '🎲 ';
-    let notice = `${prefix}${actor.name}님 주사위 [${d1}+${d2}=${sum}]! 반짝이는 [${sum}] 칸을 선택하세요.`;
-    if (sum === 10) {
-      notice = `${prefix}[${d1}+${d2}=10] REMOVE CHIP! 상대방 칩 하나를 눌러 제거하세요!`;
-    } else if (sum === 11) {
-      notice = `${prefix}[${d1}+${d2}=11] WILD! 보드의 빈 칸 아무 곳이나 눌러 칩을 놓으세요!`;
-    } else if (sum === 2 || sum === 12) {
-      notice = `${prefix}[${d1}+${d2}=${sum}] 보너스 칸 배치 후 주사위를 한 번 더 굴립니다!`;
-    }
-    setTurnNotice(notice);
-    speakKorean(notice);
-  };
-
-  const handleSoloCellClick = (idx: number, isAuto = false) => {
-    if (gameState !== 'PLAYING' || !soloDice) return;
-    const sum = soloDice[0] + soloDice[1];
-    const validTargets = getValidTargetsForRoll(soloBoard, sum, soloTurn);
-
-    if (!validTargets.includes(idx)) {
-      if (!isAuto) showToast('현재 주사위 눈금으로 선택할 수 없는 칸입니다!', 'danger');
-      return;
-    }
-
-    playSound(sum === 10 ? 'remove' : 'place');
-    const nextBoard = [...soloBoard];
-    if (sum === 10) {
-      nextBoard[idx] = 0;
-    } else {
-      nextBoard[idx] = soloTurn;
-    }
-
-    setSoloBoard(nextBoard);
-    setSoloLastMoveIdx(idx);
-    setSoloDice(null);
-
-    const winLine = findWinningSequence(nextBoard, soloTurn);
-    if (winLine) {
-      settleSoloSeqDiceWin(soloTurn, winLine);
-      return;
-    }
-
-    const actor = soloPlayers.find((p) => p.chipColor === soloTurn)!;
-    setSoloRemainingSec(soloTimeoutSec);
-    lastCountdownSpokenRef.current = null;
-
-    if (sum === 2 || sum === 12) {
-      const notice = `✨ [${sum}] 보너스! ${actor.name}님이 주사위를 한 번 더 굴립니다!`;
+      setSoloDice([d1, d2]);
+      const prefix = isAuto ? '⏰ 자동 주사위! ' : '🎲 ';
+      let notice = `${prefix}${actor.name}님 주사위 [${d1}+${d2}=${sum}]! 반짝이는 [${sum}] 칸을 선택하세요.`;
+      if (sum === 10) {
+        notice = `${prefix}[${d1}+${d2}=10] REMOVE CHIP! 상대방 칩 하나를 눌러 제거하세요!`;
+      } else if (sum === 11) {
+        notice = `${prefix}[${d1}+${d2}=11] WILD! 보드의 빈 칸 아무 곳이나 눌러 칩을 놓으세요!`;
+      } else if (sum === 2 || sum === 12) {
+        notice = `${prefix}[${d1}+${d2}=${sum}] 보너스 칸 배치 후 주사위를 한 번 더 굴립니다!`;
+      }
       setTurnNotice(notice);
       speakKorean(notice);
-      return;
-    }
+    },
+    [gameState, soloDice, playSound, soloPlayers, soloTurn, soloBoard, soloTimeoutSec, speakKorean]
+  );
 
-    const nextColor: 1 | 2 = soloTurn === 1 ? 2 : 1;
-    const nextPlayer = soloPlayers.find((p) => p.chipColor === nextColor)!;
-    const notice =
-      sum === 10
-        ? `💥 ${actor.name}님이 상대 칩 제거 완료! 👉 ${nextPlayer.name}님 주사위를 굴려주세요!`
-        : `✅ ${actor.name}님 [${BOARD_NUMBERS[idx]}] 칸 배치 완료! 👉 ${nextPlayer.name}님 주사위를 굴려주세요!`;
-    setSoloTurn(nextColor);
-    setTurnNotice(notice);
-    speakKorean(notice);
-  };
+  const handleSoloCellClick = useCallback(
+    (idx: number, isAuto = false) => {
+      if (gameState !== 'PLAYING' || !soloDice) return;
+      const sum = soloDice[0] + soloDice[1];
+      const validTargets = getValidTargetsForRoll(soloBoard, sum, soloTurn);
+
+      if (!validTargets.includes(idx)) {
+        if (!isAuto) showToast('현재 주사위 눈금으로 선택할 수 없는 칸입니다!', 'danger');
+        return;
+      }
+
+      playSound(sum === 10 ? 'remove' : 'place');
+      const nextBoard = [...soloBoard];
+      if (sum === 10) {
+        nextBoard[idx] = 0;
+      } else {
+        nextBoard[idx] = soloTurn;
+      }
+
+      setSoloBoard(nextBoard);
+      setSoloLastMoveIdx(idx);
+      setSoloDice(null);
+
+      const winLine = findWinningSequence(nextBoard, soloTurn);
+      if (winLine) {
+        settleSoloSeqDiceWin(soloTurn, winLine);
+        return;
+      }
+
+      const actor = soloPlayers.find((p) => p.chipColor === soloTurn)!;
+      setSoloRemainingSec(soloTimeoutSec);
+      lastCountdownSpokenRef.current = null;
+
+      if (sum === 2 || sum === 12) {
+        const notice = `✨ [${sum}] 보너스! ${actor.name}님이 주사위를 한 번 더 굴립니다!`;
+        setTurnNotice(notice);
+        speakKorean(notice);
+        return;
+      }
+
+      const nextColor: 1 | 2 = soloTurn === 1 ? 2 : 1;
+      const nextPlayer = soloPlayers.find((p) => p.chipColor === nextColor)!;
+      const notice =
+        sum === 10
+          ? `💥 ${actor.name}님이 상대 칩 제거 완료! 👉 ${nextPlayer.name}님 주사위를 굴려주세요!`
+          : `✅ ${actor.name}님 [${BOARD_NUMBERS[idx]}] 칸 배치 완료! 👉 ${nextPlayer.name}님 주사위를 굴려주세요!`;
+      setSoloTurn(nextColor);
+      setTurnNotice(notice);
+      speakKorean(notice);
+    },
+    [
+      gameState,
+      soloDice,
+      soloBoard,
+      soloTurn,
+      showToast,
+      playSound,
+      settleSoloSeqDiceWin,
+      soloPlayers,
+      soloTimeoutSec,
+      speakKorean,
+    ]
+  );
+
+  // 단독게임(SOLO) 타이머
+  useEffect(() => {
+    if (appMode !== 'SOLO' || gameState !== 'PLAYING') return;
+
+    const timer = window.setInterval(() => {
+      setSoloRemainingSec((prev) => {
+        const next = Math.max(0, prev - 1);
+        handleCountdownCue(next);
+        if (next === 0) {
+          if (!soloDice) {
+            handleSoloRollDice(true);
+          } else {
+            const sum = soloDice[0] + soloDice[1];
+            const validTargets = getValidTargetsForRoll(soloBoard, sum, soloTurn);
+            if (validTargets.length > 0) {
+              const randIdx = validTargets[Math.floor(Math.random() * validTargets.length)];
+              handleSoloCellClick(randIdx, true);
+            }
+          }
+        }
+        return next;
+      });
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [
+    appMode,
+    gameState,
+    soloDice,
+    soloBoard,
+    soloTurn,
+    handleCountdownCue,
+    handleSoloRollDice,
+    handleSoloCellClick,
+  ]);
 
   // =========================================================================
-  // 사진 디자인 그대로 구현한 6x6 Sequence Dice 보드 렌더링
+  // 6x6 Sequence Dice 보드 렌더링
   // =========================================================================
   const renderSequenceDiceBoard = (
     board: ChipOwner[],
@@ -1326,7 +1435,7 @@ export default function Page10() {
 
     return (
       <div className="sd-board-casing">
-        {/* 상단 블랙 베젤 (사진처럼 뒤집힌 로고 & 특수 주사위 범례) */}
+        {/* 상단 블랙 베젤 */}
         <div className="sd-top-bezel">
           <span className="sd-bezel-emblem">🎲</span>
           <span className="sd-rule-pill upside-down">11 = WILD</span>
@@ -1358,11 +1467,9 @@ export default function Page10() {
                 } ${isLast ? 'last-moved' : ''} ${isWinCell ? 'win-highlight' : ''}`}
                 aria-label={`${num}번 칸`}
               >
-                {/* 좌상단 정방향 작은 숫자 & 우하단 역방향 작은 숫자 */}
                 <span className="sd-corner-num top-left">{num}</span>
                 <span className="sd-corner-num bottom-right">{num}</span>
 
-                {/* 중앙 그래픽: 2와 12는 대각선 주사위 2개, 나머지는 붉은 세리프 숫자 */}
                 {isCornerTwo ? (
                   <div className="sd-tile-dice-pair">
                     <DiceFacePipGrid value={1} size="sm" />
@@ -1379,7 +1486,6 @@ export default function Page10() {
                   </span>
                 )}
 
-                {/* 배치된 원형 보드게임 칩 (사진의 입체 레드/블루 플라스틱 칩) */}
                 {chipOwner !== 0 && (
                   <span
                     className={`sd-board-chip ${chipOwner === 1 ? 'red-chip' : 'blue-chip'} ${
@@ -1394,7 +1500,7 @@ export default function Page10() {
           })}
         </div>
 
-        {/* 하단 블랙 베젤 (정방향 로고 & 특수 주사위 범례) */}
+        {/* 하단 블랙 베젤 */}
         <div className="sd-bottom-bezel">
           <span className="sd-bezel-emblem">🎲</span>
           <span className="sd-rule-pill">10 = REMOVE CHIP</span>
@@ -1870,8 +1976,8 @@ export default function Page10() {
     const activeTurnPlayer = roomPlayers.find((p) => p.chipColor === activeNetRoom.currentTurn);
     const isMyTurn =
       activeNetRoom.status === 'PLAYING' &&
-      activeTurnPlayer?.id === mySessionId &&
-      !amISpectator;
+      !amISpectator &&
+      activeTurnPlayer?.id === mySessionId;
     const isRoundEnded =
       activeNetRoom.status === 'ROUND_OVER' || activeNetRoom.status === 'MATCH_OVER';
     const netDiceSum = activeNetRoom.dice ? activeNetRoom.dice[0] + activeNetRoom.dice[1] : null;
@@ -2009,7 +2115,7 @@ export default function Page10() {
                       type="button"
                       className="btn btn-roll-dice"
                       disabled={!isMyTurn}
-                      onClick={handleNetRollDice}
+                      onClick={() => void handleNetRollDice()}
                     >
                       🎲 주사위 2개 굴리기
                     </button>
@@ -2018,7 +2124,7 @@ export default function Page10() {
               )}
             </div>
 
-            {/* 사진 디자인 그대로 재현한 6x6 Sequence Dice 보드 */}
+            {/* 6x6 Sequence Dice 보드 */}
             <div className="board-center-stage">
               {renderSequenceDiceBoard(
                 activeNetRoom.board,
@@ -2027,7 +2133,7 @@ export default function Page10() {
                 isMyTurn,
                 activeNetRoom.lastMoveIdx,
                 activeNetRoom.winningLine,
-                handleNetCellClick
+                (idx) => void handleNetCellClick(idx)
               )}
             </div>
           </div>
@@ -2342,7 +2448,7 @@ export default function Page10() {
               )}
             </div>
 
-            {/* 사진 디자인 그대로 재현한 6x6 Sequence Dice 보드 */}
+            {/* 6x6 Sequence Dice 보드 */}
             <div className="board-center-stage">
               {renderSequenceDiceBoard(
                 soloBoard,
