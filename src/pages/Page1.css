@@ -19,3 +19,12 @@
   word-break: keep-all;
   text-wrap: balance;
 }
+p.eng{
+  font-size: 18px;
+  font-weight: 900;
+  text-align: center;
+  margin: 18px;
+  word-break: keep-all;
+  text-wrap: balance;
+  color: #e68383;
+}
