@@ -1,0 +1,30 @@
+.page14 {
+  color: #15c01d;
+}
+
+.his-container { 
+  align-items:center;
+}
+.his-container h1{
+  font-size: 50px;
+  font-weight: 900;
+  text-align: center;
+  margin-bottom: 18px;
+  color: #0f172a;
+}
+.his-container p{
+  font-weight: 900;
+  text-align: center;
+  margin: 18px;
+  word-break: keep-all;
+  text-wrap: balance;
+}
+p.eng{
+  font-size: 18px;
+  font-weight: 900;
+  text-align: center;
+  margin: 18px;
+  word-break: keep-all;
+  text-wrap: balance;
+  color: #e68383;
+}

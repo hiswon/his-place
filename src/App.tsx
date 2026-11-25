@@ -14,6 +14,8 @@ import Page10 from './pages/Page10';
 import Page11 from './pages/Page11';
 import Page12 from './pages/Page12';
 import Page13 from './pages/Page13';
+import Page14 from './pages/Page14';
+import Page15 from './pages/Page15';
 
 const App: React.FC = () => {
   return (
@@ -34,6 +36,8 @@ const App: React.FC = () => {
         <Route path="/page11" element={<Page11 />} />
         <Route path="/page12" element={<Page12 />} />
         <Route path="/page13" element={<Page13 />} />
+        <Route path="/page14" element={<Page14 />} />
+        <Route path="/page15" element={<Page15 />} />
       </Routes>
     </BrowserRouter>
   );
