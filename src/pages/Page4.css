@@ -3,7 +3,7 @@
   inset: 0;
   width: 100%;
   height: 100dvh;
-  padding: 8px 10px 10px;
+  padding: 5px 6px 6px;
   font-family: system-ui, -apple-system, sans-serif;
   color: #2c1810;
   box-sizing: border-box;
@@ -103,15 +103,15 @@
 }
 
 .catan-container .btn {
-  padding: 9px 14px;
-  border-radius: 12px;
+  padding: 8px 12px;
+  border-radius: 11px;
   font-weight: 800;
   cursor: pointer;
   border: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 5px;
   transition: transform 0.12s ease, filter 0.15s ease;
 }
 
@@ -146,8 +146,8 @@
 /* 개척자 색상 원형 아이콘 */
 .catan-container .catan-color-dot {
   display: inline-block;
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
   border-radius: 50%;
   border: 1.5px solid #2c1810;
   flex-shrink: 0;
@@ -198,50 +198,50 @@
   }
 }
 
-/* 컴팩트 테이블 레이아웃 */
+/* 컴팩트 테이블 레이아웃 (보드판 최대 확보) */
 .catan-container .play-wrapper.compact-tablet-mode {
-  max-width: 860px;
+  max-width: 960px;
   height: 100%;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 6px;
+  gap: 4px;
 }
 
 .catan-container .game-header.compact-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-shrink: 0;
 }
 
 .catan-container .player-status-bar {
   display: flex;
-  gap: 5px;
+  gap: 4px;
   flex-wrap: wrap;
   justify-content: center;
-  padding: 2px;
+  padding: 1px;
 }
 
 .catan-container .player-badge-card {
-  background: rgba(255, 248, 238, 0.92);
-  padding: 4px 7px;
-  border-radius: 10px;
+  background: rgba(255, 248, 238, 0.94);
+  padding: 3px 6px;
+  border-radius: 9px;
   white-space: nowrap;
   border: 1.5px solid transparent;
-  transition: transform 0.25s ease, box-shadow 0.25s ease;
+  transition: transform 0.2s ease;
 }
 
 .catan-container .player-badge-card.active-turn-spotlight {
   background: #ffeaa4;
   border-color: #f59e0b;
-  transform: scale(1.04);
+  transform: scale(1.03);
 }
 
 .catan-container .turn-hero-name {
-  font-size: 13.5px;
+  font-size: 12.5px;
   font-weight: 900;
   color: #9a3412;
 }
@@ -249,15 +249,15 @@
 .catan-container .player-badge-top {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   color: #3e2723;
-  font-size: 11.5px;
+  font-size: 11px;
 }
 
 .catan-container .vp-score-pill {
   background: #1565c0;
   color: #ffffff;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 900;
   padding: 1px 4px;
   border-radius: 5px;
@@ -266,20 +266,20 @@
 .catan-container .card-count-pill {
   background: #5d4037;
   color: #fef3c7;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 900;
   padding: 1px 4px;
   border-radius: 5px;
 }
 
 .catan-container .special-badge {
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .catan-container .win-count-pill {
   background: #fef3c7;
   color: #b45309;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 900;
   padding: 1px 4px;
   border-radius: 5px;
@@ -288,76 +288,78 @@
 .catan-container .badge-score {
   background: #efe6d5;
   color: #3e2723;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 800;
   padding: 1px 4px;
   border-radius: 5px;
 }
 
 .catan-container .btn-compact-setup {
-  padding: 5px 9px;
-  font-size: 14px;
-  border-radius: 9px;
+  padding: 4px 8px;
+  font-size: 13px;
+  border-radius: 8px;
   flex-shrink: 0;
 }
 
 /* =========================================================
-   카탄 메인 원목 테이블 & 육각 섬 보드
+   카탄 메인 원목 테이블 & 대형 육각 섬 보드
    ========================================================= */
 .catan-container .catan-table-board {
   flex: 1;
-  background: linear-gradient(180deg, rgba(62, 39, 35, 0.82) 0%, rgba(38, 22, 18, 0.92) 100%);
-  border: 3px solid #a1887f;
-  border-radius: 22px;
-  padding: 8px 12px;
+  background: linear-gradient(180deg, rgba(62, 39, 35, 0.85) 0%, rgba(38, 22, 18, 0.94) 100%);
+  border: 2.5px solid #a1887f;
+  border-radius: 18px;
+  padding: 6px 8px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 6px;
-  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.5), inset 0 0 24px rgba(0, 0, 0, 0.45);
+  gap: 4px;
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.5), inset 0 0 20px rgba(0, 0, 0, 0.45);
   min-height: 0;
 }
 
 .catan-container .catan-notice-banner {
-  background: rgba(255, 248, 231, 0.14);
-  border: 1.5px solid rgba(253, 224, 71, 0.55);
+  background: rgba(255, 248, 231, 0.16);
+  border: 1.5px solid rgba(253, 224, 71, 0.6);
   color: #fde047;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 800;
   text-align: center;
-  padding: 5px 10px;
-  border-radius: 10px;
+  padding: 4px 8px;
+  border-radius: 9px;
+  flex-shrink: 0;
 }
 
 .catan-container .catan-top-strip {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  background: rgba(24, 14, 10, 0.65);
+  gap: 6px;
+  background: rgba(24, 14, 10, 0.68);
   border: 1.5px solid rgba(215, 191, 162, 0.35);
   border-radius: 999px;
-  padding: 4px 14px;
+  padding: 3px 12px;
+  flex-shrink: 0;
 }
 
 .catan-container .dice-display-box {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   color: #fef3c7;
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .catan-container .die-face {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   background: #fffdf9;
   color: #2c1810;
   font-weight: 900;
-  font-size: 14px;
+  font-size: 13px;
   border-radius: 6px;
   border: 1.5px solid #8d6e63;
 }
@@ -370,44 +372,47 @@
 .catan-container .center-pot-box {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  background: rgba(93, 64, 55, 0.7);
+  gap: 6px;
+  background: rgba(93, 64, 55, 0.75);
   border: 1.5px solid #fbbf24;
   border-radius: 999px;
-  padding: 3px 12px;
+  padding: 2px 10px;
 }
 
 .catan-container .pot-label {
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 700;
   color: #fde68a;
 }
 
 .catan-container .pot-amount {
-  font-size: 13.5px;
+  font-size: 12.5px;
   font-weight: 900;
   color: #facc15;
 }
 
 .catan-container .cost-guide-mini {
   display: flex;
-  gap: 8px;
-  font-size: 11px;
+  gap: 6px;
+  font-size: 10.5px;
   font-weight: 700;
   color: #e6ccb2;
 }
 
+/* 보드판 중앙 스테이지: 화면 높이와 너비를 최대한 활용 */
 .catan-container .board-center-stage {
   flex: 1;
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
   min-height: 0;
+  padding: 0;
 }
 
 .catan-container .catan-island-frame {
-  width: min(50dvh, 84vw, 440px);
-  height: min(50dvh, 84vw, 440px);
+  width: min(70dvh, 96vw, 680px);
+  height: min(70dvh, 96vw, 680px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -416,7 +421,8 @@
 .catan-container .catan-board-svg {
   width: 100%;
   height: 100%;
-  filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.6));
+  overflow: visible;
+  filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.65));
 }
 
 .catan-container .svg-clickable-target {
@@ -425,7 +431,7 @@
 }
 
 .catan-container .svg-clickable-target:hover {
-  opacity: 0.85;
+  opacity: 0.88;
 }
 
 /* 승자 축하 상단 바 */
@@ -454,17 +460,17 @@
 }
 
 /* =========================================================
-   하단 자원 및 건설 조작 도크
+   하단 자원 및 건설 조작 도크 (슬림화)
    ========================================================= */
 .catan-container .catan-bottom-dock {
   background: linear-gradient(180deg, #fffdf9 0%, #f3e6d3 100%);
   border: 2px solid #bcaaa4;
-  border-radius: 14px;
-  padding: 7px 12px;
+  border-radius: 12px;
+  padding: 5px 10px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   flex-shrink: 0;
 }
 
@@ -473,27 +479,27 @@
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
 }
 
 .catan-container .my-owner-tag {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 13px;
+  gap: 4px;
+  font-size: 12px;
   color: #3e2723;
 }
 
 .catan-container .resource-pills-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 4px;
 }
 
 .catan-container .res-pill {
-  padding: 3px 8px;
-  border-radius: 8px;
-  font-size: 12px;
+  padding: 2px 7px;
+  border-radius: 7px;
+  font-size: 11px;
   font-weight: 800;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
 }
@@ -508,9 +514,9 @@
   background: #4a148c;
   color: #ffffff;
   border: 1.5px solid #ce93d8;
-  border-radius: 8px;
-  padding: 3px 8px;
-  font-size: 11.5px;
+  border-radius: 7px;
+  padding: 2px 7px;
+  font-size: 11px;
   font-weight: 800;
   cursor: pointer;
 }
@@ -531,15 +537,15 @@
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 5px;
 }
 
 .catan-container .action-btn {
   background: #efe6d5;
   color: #3e2723;
   border: 1.5px solid #a1887f;
-  padding: 6px 11px;
-  font-size: 12.5px;
+  padding: 5px 10px;
+  font-size: 12px;
 }
 
 .catan-container .action-btn.selected {
@@ -552,18 +558,18 @@
 .catan-container .turn-owner-pill.large-turn-pill {
   background: #4e342e;
   color: #fef3c7;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 900;
-  padding: 5px 16px;
+  padding: 4px 14px;
   border-radius: 999px;
 }
 
 .catan-container .waiting-dock-msg {
   text-align: center;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 800;
   color: #3e2723;
-  padding: 3px 0;
+  padding: 2px 0;
 }
 
 /* =========================================================
@@ -928,20 +934,20 @@
   background: #2c1810;
   color: #fbbf24;
   border: 1px solid #8d6e63;
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 900;
-  padding: 4px 8px;
-  border-radius: 8px;
+  padding: 3px 7px;
+  border-radius: 7px;
 }
 
 .catan-container .net-timer-badge {
   background: #fffdf9;
   color: #2e7d32;
   border: 1.5px solid #4caf50;
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 900;
-  padding: 3px 7px;
-  border-radius: 8px;
+  padding: 2px 6px;
+  border-radius: 7px;
 }
 
 .catan-container .net-timer-badge.urgent {
@@ -955,9 +961,9 @@
   border: 1px solid #fbbf24;
   color: #fef3c7;
   text-align: center;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 700;
-  padding: 4px 10px;
-  border-radius: 8px;
+  padding: 3px 8px;
+  border-radius: 7px;
   flex-shrink: 0;
 }

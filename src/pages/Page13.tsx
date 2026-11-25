@@ -9,7 +9,7 @@ import {
   onDisconnect,
 } from 'firebase/database';
 import { db } from './firebase';
-import './Page13.css';
+import './Page9.css';
 
 // 0: 빈 칸, 1: 블루 칩(선공), 2: 그린 칩(후공)
 type ChipOwner = 0 | 1 | 2;
@@ -93,7 +93,6 @@ const TARGET_SEQUENCES = 2; // 2인 대전 정식 승리 조건: 2줄(5목 x 2) 
 /**
  * 정통 시퀀스 10x10 (100칸) 보드 레이아웃
  * 'FREE': 네 모서리 와일드 칸 (양 플레이어 모두 공용 5번째 칸으로 사용 가능)
- * J(잭) 카드는 보드판에 존재하지 않음 (두눈박이 J=와일드 착수, 외눈박이 J=상대 칩 제거)
  */
 const SEQUENCE_BOARD_LAYOUT: readonly string[] = [
   'FREE', '2S', '3S', '4S', '5S', '6S', '7S', '8S', '9S', 'FREE',
@@ -113,9 +112,6 @@ const CORNER_INDICES = new Set([0, 9, 90, 99]);
 const SUITS = ['S', 'H', 'D', 'C'] as const;
 const RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'] as const;
 
-/**
- * 104장(트럼프 2덱) 생성 및 셔플
- */
 function createShuffledDoubleDeck(): string[] {
   const deck: string[] = [];
   for (let d = 0; d < 2; d++) {
@@ -132,10 +128,6 @@ function createShuffledDoubleDeck(): string[] {
   return deck;
 }
 
-/**
- * 두눈박이 잭(와일드 착수): JD, JC
- * 외눈박이 잭(상대 칩 제거): JH, JS
- */
 function isTwoEyedJack(card: string): boolean {
   return card === 'JD' || card === 'JC';
 }
@@ -163,14 +155,22 @@ function isRedSuit(suit: string): boolean {
   return suit === 'H' || suit === 'D';
 }
 
+/**
+ * 카드 한 장을 '9♠', '10♥', 'A♣' 형태로 간결히 표기
+ */
+function formatCompactCardLabel(card: string): string {
+  if (card === 'FREE') return 'FREE';
+  const suit = card.slice(-1);
+  const rank = card.slice(0, -1);
+  return `${rank}${getSuitSymbol(suit)}`;
+}
+
 function formatCardKorean(card: string): string {
   if (card === 'JD') return '♦J (두눈박이·와일드)';
   if (card === 'JC') return '♣J (두눈박이·와일드)';
   if (card === 'JH') return '♥J (외눈박이·칩제거)';
   if (card === 'JS') return '♠J (외눈박이·칩제거)';
-  const suit = card.slice(-1);
-  const rank = card.slice(0, -1);
-  return `${getSuitSymbol(suit)}${rank}`;
+  return formatCompactCardLabel(card);
 }
 
 function formatCoord10(idx: number): string {
@@ -179,9 +179,6 @@ function formatCoord10(idx: number): string {
   return `${col}${row}`;
 }
 
-/**
- * 특정 카드가 보드 위에서 사용 가능한지 확인 (데드 카드 판별용)
- */
 function isCardPlayableOnBoard(
   card: string,
   boardTokens: ChipOwner[],
@@ -205,9 +202,6 @@ function isCardPlayableOnBoard(
   return false;
 }
 
-/**
- * 선택된 카드(selectedCard)로 보드 위에서 착수/제거 가능한 유효 칸 인덱스 목록 반환
- */
 function getValidBoardTargetsForCard(
   card: string | null,
   boardTokens: ChipOwner[],
@@ -245,10 +239,6 @@ function getValidBoardTargetsForCard(
   return targets;
 }
 
-/**
- * 10x10 보드에서 완성된 5목(시퀀스) 라인 탐지
- * 정통 규칙: 두 번째 시퀀스는 첫 번째 시퀀스와 최대 1칸까지만 교차 허용
- */
 function evaluateSequences(
   boardTokens: ChipOwner[],
   color: 1 | 2
@@ -296,11 +286,9 @@ function evaluateSequences(
     return { count: 0, locked: [] };
   }
 
-  // 첫 번째 라인 선택
   const chosen: SequenceLine[] = [candidates[0]];
   const firstSet = new Set(candidates[0].indices);
 
-  // 첫 번째 라인과 1칸 이하로만 겹치는 두 번째 라인 탐색
   for (let i = 1; i < candidates.length; i++) {
     const overlap = candidates[i].indices.filter((idx) => firstSet.has(idx)).length;
     if (overlap <= 1) {
@@ -324,9 +312,6 @@ function evaluateSequences(
   };
 }
 
-/**
- * 덱에서 카드 1장 보충 (덱 소진 시 버린 카드 셔플 재활용)
- */
 function drawOneCard(
   deck: string[],
   discardPile: string[]
@@ -373,7 +358,7 @@ function createDefaultSequenceRoom(roomId: number): NetSequenceRoomData {
   };
 }
 
-export default function Page13() {
+export default function Page9() {
   const [appMode, setAppMode] = useState<
     'HOME' | 'SOLO' | 'NET_LOBBY' | 'NET_ROOM' | 'HALL_OF_FAME'
   >('HOME');
@@ -881,9 +866,6 @@ export default function Page13() {
     });
   };
 
-  /**
-   * 넷게임 라운드 시작 (7장씩 배분 + 동일 판돈 베팅)
-   */
   const handleStartNetRound = async (isNextRound = false) => {
     if (!activeNetRoom) return;
     const roomRef = ref(db, `sequence_rooms/room_${activeNetRoom.roomId}`);
@@ -972,7 +954,7 @@ export default function Page13() {
       room.lockedIndices = [];
       room.blueSeqCount = 0;
       room.greenSeqCount = 0;
-      room.currentTurn = 1; // 블루 칩 선공
+      room.currentTurn = 1;
       room.lastMoveIdx = null;
       room.lastActionType = null;
       room.turnDeadline = Date.now() + room.baseTimeout * 1000;
@@ -988,9 +970,6 @@ export default function Page13() {
     triggerChipAnimation('전원', activeNetRoom.anteBet, '#1d4ed8');
   };
 
-  /**
-   * 넷게임 라운드 정산 (시퀀스 2줄 완성 또는 무승부)
-   */
   const settleNetSequenceRound = (
     room: NetSequenceRoomData,
     winnerColor: 1 | 2 | 0,
@@ -1050,9 +1029,6 @@ export default function Page13() {
     });
   };
 
-  /**
-   * 넷게임 데드 카드(보드에 더 이상 빈 자리가 없는 카드) 교체
-   */
   const handleNetDiscardDeadCard = async (handIdx: number) => {
     if (!activeNetRoom || activeNetRoom.status !== 'PLAYING') return;
     const actor = activeNetRoom.players.find((p) => p.chipColor === activeNetRoom.currentTurn);
@@ -1095,9 +1071,6 @@ export default function Page13() {
     });
   };
 
-  /**
-   * 넷게임 보드 칸 클릭 착수 처리
-   */
   const handleNetCellClick = async (idx: number) => {
     if (!activeNetRoom || activeNetRoom.status !== 'PLAYING') return;
     const actor = activeNetRoom.players.find((p) => p.chipColor === activeNetRoom.currentTurn);
@@ -1152,7 +1125,6 @@ export default function Page13() {
       const removing = isOneEyedJack(usedCard);
       tokensCopy[idx] = removing ? 0 : currentActor.chipColor;
 
-      // 카드 버리고 1장 드로우
       const discardNext = [...(room.discardPile || []), usedCard];
       const drawn = drawOneCard(room.deck || [], discardNext);
       const updatedHand = [...currentActor.hand];
@@ -1165,7 +1137,6 @@ export default function Page13() {
       room.deck = drawn.nextDeck;
       room.discardPile = drawn.nextDiscard;
 
-      // 양 플레이어 시퀀스(5목) 줄 수 재계산
       const blueEval = evaluateSequences(tokensCopy, 1);
       const greenEval = evaluateSequences(tokensCopy, 2);
       const combinedLocked = Array.from(new Set([...blueEval.locked, ...greenEval.locked]));
@@ -1177,7 +1148,6 @@ export default function Page13() {
       room.lastMoveIdx = idx;
       room.lastActionType = removing ? 'REMOVE' : 'PLACE';
 
-      // 승리 판정 (2줄 완성)
       if (blueEval.count >= TARGET_SEQUENCES) {
         settleNetSequenceRound(room, 1, blueEval.count, greenEval.count);
         return room;
@@ -1187,7 +1157,6 @@ export default function Page13() {
         return room;
       }
 
-      // 양쪽 모두 손패가 비어 더 이상 진행 불가 시 무승부 처리
       if (room.players.every((pl) => pl.hand.length === 0)) {
         settleNetSequenceRound(room, 0, blueEval.count, greenEval.count);
         return room;
@@ -1208,9 +1177,6 @@ export default function Page13() {
     setNetSelectedCardIdx(0);
   };
 
-  /**
-   * 넷게임 시간 초과 자동 착수
-   */
   const handleNetTurnTimeout = async (room: NetSequenceRoomData) => {
     const roomRef = ref(db, `sequence_rooms/room_${room.roomId}`);
     await runTransaction(roomRef, (roomData) => {
@@ -1582,7 +1548,7 @@ export default function Page13() {
   };
 
   // =========================================================================
-  // 사진 디자인 재현: 10x10 정통 SEQUENCE 보드판 + 카드 손패 UI 헬퍼
+  // 꽉 차는 10x10 시퀀스 보드판 (9♠, 10♥ 단일 문양+숫자 표기) & 손패 UI
   // =========================================================================
   const renderSequenceBoard = (
     boardTokens: ChipOwner[],
@@ -1598,14 +1564,12 @@ export default function Page13() {
 
     return (
       <div className="seq-board-frame">
-        {/* 상단 역방향 SEQUENCE 타이틀 배너 (사진 디테일 재현) */}
         <div className="seq-board-banner top-inverted">
-          <span className="seq-banner-rule-tag">2 SEQUENCES TO WIN</span>
+          <span className="seq-banner-rule-tag">2 LINES TO WIN</span>
           <span className="seq-logo-text">SEQUENCE</span>
-          <span className="seq-banner-rule-tag">FIVE IN A ROW</span>
+          <span className="seq-banner-rule-tag">5 IN A ROW</span>
         </div>
 
-        {/* 10x10 정통 카드 격자 */}
         <div className="seq-grid-10x10">
           {SEQUENCE_BOARD_LAYOUT.map((cardCode, idx) => {
             const isCorner = CORNER_INDICES.has(idx);
@@ -1615,8 +1579,8 @@ export default function Page13() {
             const isLast = lastMoveIdx === idx;
 
             const suit = isCorner ? '' : cardCode.slice(-1);
-            const rank = isCorner ? 'FREE' : cardCode.slice(0, -1);
             const red = !isCorner && isRedSuit(suit);
+            const compactText = formatCompactCardLabel(cardCode);
 
             return (
               <button
@@ -1627,28 +1591,16 @@ export default function Page13() {
                 className={`seq-card-cell ${isCorner ? 'corner-free-cell' : ''} ${
                   isValid ? 'valid-highlight' : ''
                 } ${isLocked ? 'locked-seq-cell' : ''} ${isLast ? 'last-moved-cell' : ''}`}
-                aria-label={`${formatCoord10(idx)} ${cardCode}`}
+                aria-label={`${formatCoord10(idx)} ${compactText}`}
               >
                 {isCorner ? (
-                  <div className="free-corner-emblem">
-                    <span className="corner-ring">★</span>
-                    <span className="corner-text">FREE</span>
-                  </div>
+                  <span className="free-corner-label">FREE</span>
                 ) : (
-                  <div className={`mini-board-card ${red ? 'red-card' : 'black-card'}`}>
-                    <div className="mini-card-corner top-left">
-                      <span>{rank}</span>
-                      <span>{getSuitSymbol(suit)}</span>
-                    </div>
-                    <div className="mini-card-center-pip">{getSuitSymbol(suit)}</div>
-                    <div className="mini-card-corner bottom-right">
-                      <span>{rank}</span>
-                      <span>{getSuitSymbol(suit)}</span>
-                    </div>
-                  </div>
+                  <span className={`compact-card-text ${red ? 'red-card' : 'black-card'}`}>
+                    {compactText}
+                  </span>
                 )}
 
-                {/* 착수 가능 가이드 하이라이트 */}
                 {isValid && showValidHints && (
                   <span
                     className={`seq-target-ring ${
@@ -1657,7 +1609,6 @@ export default function Page13() {
                   />
                 )}
 
-                {/* 사진 속 원형 플라스틱 시퀀스 칩 (파랑 / 초록) */}
                 {token !== 0 && (
                   <span
                     className={`seq-plastic-chip ${
@@ -1672,11 +1623,10 @@ export default function Page13() {
           })}
         </div>
 
-        {/* 하단 정방향 SEQUENCE 타이틀 배너 */}
         <div className="seq-board-banner bottom-normal">
-          <span className="seq-banner-rule-tag">TWO-EYED J = WILD</span>
+          <span className="seq-banner-rule-tag">2-EYED J = WILD</span>
           <span className="seq-logo-text">SEQUENCE</span>
-          <span className="seq-banner-rule-tag">ONE-EYED J = REMOVE</span>
+          <span className="seq-banner-rule-tag">1-EYED J = REMOVE</span>
         </div>
       </div>
     );
@@ -1698,12 +1648,12 @@ export default function Page13() {
       <div className="seq-hand-cards-row">
         {hand.map((card, idx) => {
           const suit = card.slice(-1);
-          const rank = card.slice(0, -1);
           const red = isRedSuit(suit);
           const selected = selectedIdx === idx;
           const twoEyed = isTwoEyedJack(card);
           const oneEyed = isOneEyedJack(card);
           const playable = isCardPlayableOnBoard(card, boardTokens, myColor, lockedSet);
+          const label = formatCompactCardLabel(card);
 
           return (
             <div key={`${card}_${idx}`} className="hand-card-slot">
@@ -1715,16 +1665,10 @@ export default function Page13() {
                   selected ? 'selected-hand-card' : ''
                 } ${!playable ? 'dead-hand-card' : ''}`}
               >
-                <div className="hand-card-top">
-                  <strong>{rank}</strong>
-                  <span>{getSuitSymbol(suit)}</span>
-                </div>
-                <div className="hand-card-mid">
-                  {twoEyed ? '👀J' : oneEyed ? '👁️J' : getSuitSymbol(suit)}
-                </div>
-                <div className="hand-card-tag">
+                <span className="hand-card-main-label">{label}</span>
+                <span className="hand-card-tag">
                   {twoEyed ? '와일드' : oneEyed ? '제거' : !playable ? '데드' : ''}
-                </div>
+                </span>
               </button>
 
               {canInteract && !playable && (
@@ -2240,7 +2184,6 @@ export default function Page13() {
         )}
 
         <div className="play-wrapper compact-tablet-mode">
-          {/* 상단 헤더 */}
           <div className="game-header compact-header">
             <div className="net-level-timer-box">
               <span className="net-level-badge">
@@ -2312,7 +2255,6 @@ export default function Page13() {
             </div>
           )}
 
-          {/* 중앙 원목 테이블 영역 */}
           <div className="oth-table-board">
             {isRoundEnded ? (
               <div className="winner-celebration-top-bar">
@@ -2344,7 +2286,6 @@ export default function Page13() {
               </div>
             )}
 
-            {/* 판돈 및 실시간 시퀀스 줄 수 스코어보드 */}
             <div className="oth-scoreboard-strip">
               <div className="score-side">
                 <span className="mini-disc-icon large blue" />
@@ -2366,7 +2307,6 @@ export default function Page13() {
               </div>
             </div>
 
-            {/* 10x10 시퀀스 보드판 */}
             <div className="board-center-stage">
               {renderSequenceBoard(
                 activeNetRoom.boardTokens,
@@ -2380,9 +2320,8 @@ export default function Page13() {
             </div>
           </div>
 
-          {/* 하단 카드 패 도크 */}
           <div className="oth-bottom-dock">
-            <div className="dock-top-status" style={{ marginBottom: '6px' }}>
+            <div className="dock-top-status" style={{ marginBottom: '4px' }}>
               {amISpectator ? (
                 <span className="waiting-dock-msg">👀 관전 모드로 대국을 지켜보고 있습니다.</span>
               ) : isRoundEnded ? (
@@ -2600,7 +2539,6 @@ export default function Page13() {
 
       {(gameState === 'PLAYING' || gameState === 'ROUND_OVER' || gameState === 'MATCH_OVER') && (
         <div className="play-wrapper compact-tablet-mode">
-          {/* 상단 헤더 */}
           <div className="game-header compact-header">
             <div className="net-level-timer-box">
               <span className="net-level-badge">제 {soloRoundNum}국</span>
@@ -2659,7 +2597,6 @@ export default function Page13() {
             </div>
           </div>
 
-          {/* 중앙 원목 테이블 보드 */}
           <div className="oth-table-board">
             {isSoloEnded ? (
               <div className="winner-celebration-top-bar">
@@ -2691,7 +2628,6 @@ export default function Page13() {
               </div>
             )}
 
-            {/* 판돈 및 실시간 시퀀스 줄 수 카운터 */}
             <div className="oth-scoreboard-strip">
               <div className="score-side">
                 <span className="mini-disc-icon large blue" />
@@ -2711,7 +2647,6 @@ export default function Page13() {
               </div>
             </div>
 
-            {/* 10x10 시퀀스 보드판 */}
             <div className="board-center-stage">
               {renderSequenceBoard(
                 soloBoardTokens,
@@ -2731,9 +2666,8 @@ export default function Page13() {
             </div>
           </div>
 
-          {/* 하단 현재 차례 플레이어 카드 패 도크 */}
           <div className="oth-bottom-dock">
-            <div className="dock-top-status" style={{ marginBottom: '6px' }}>
+            <div className="dock-top-status" style={{ marginBottom: '4px' }}>
               {isSoloEnded ? (
                 <span className="waiting-dock-msg">
                   🎉 대국 종료! <strong>[다음 대국 시작]</strong>을 눌러 선/후공을 교대해 계속

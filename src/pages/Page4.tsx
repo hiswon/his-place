@@ -2069,22 +2069,22 @@ export default function Page4() {
                 {/* 지형 이모지 & 이름 */}
                 <text
                   x={hex.cx}
-                  y={hex.cy - 14}
+                  y={hex.cy - 17}
                   textAnchor="middle"
-                  fontSize="18"
+                  fontSize="22"
                   pointerEvents="none"
                 >
                   {meta.icon}
                 </text>
                 <text
                   x={hex.cx}
-                  y={hex.cy + 30}
+                  y={hex.cy + 34}
                   textAnchor="middle"
-                  fontSize="9.5"
-                  fontWeight="800"
-                  fill="#fffdf9"
-                  stroke="rgba(0,0,0,0.55)"
-                  strokeWidth="2.2"
+                  fontSize="12"
+                  fontWeight="900"
+                  fill="#ffffff"
+                  stroke="#1c120d"
+                  strokeWidth="3.2"
                   paintOrder="stroke"
                   pointerEvents="none"
                 >
@@ -2097,18 +2097,18 @@ export default function Page4() {
                     <circle
                       cx={hex.cx}
                       cy={hex.cy + 8}
-                      r="14.5"
+                      r="17"
                       fill="#fffdf7"
-                      stroke="#5d4037"
-                      strokeWidth="1.8"
+                      stroke="#3e2723"
+                      strokeWidth="2.2"
                     />
                     <text
                       x={hex.cx}
-                      y={hex.cy + 13}
+                      y={hex.cy + 14}
                       textAnchor="middle"
-                      fontSize="14"
+                      fontSize="16.5"
                       fontWeight="900"
-                      fill={isHighProb ? '#d32f2f' : '#2c1810'}
+                      fill={isHighProb ? '#c62828' : '#2c1810'}
                     >
                       {hex.numberToken}
                     </text>
