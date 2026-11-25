@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   ref,
   onValue,
@@ -6,44 +6,97 @@ import {
   update,
   get,
   runTransaction,
+  onDisconnect,
 } from 'firebase/database';
 import { db } from './firebase';
 import './Page4.css';
 
-export type FlipCardKind = 'NUMBER' | 'MODIFIER' | 'ACTION';
-export type FlipActionType = 'FREEZE' | 'FLIP_THREE' | 'SECOND_CHANCE';
-export type FlipModifierType = 'PLUS_2' | 'PLUS_4' | 'PLUS_6' | 'PLUS_8' | 'PLUS_10' | 'MULTI_2';
+// =========================================================================
+// 타입 정의 (Strict TypeScript)
+// =========================================================================
+type ResourceType = 'wood' | 'brick' | 'sheep' | 'wheat' | 'ore';
+type TerrainType = ResourceType | 'desert';
+type DevCardType = 'knight' | 'victory' | 'road_building' | 'year_of_plenty' | 'monopoly';
+type PlayerColor = 'red' | 'blue' | 'orange' | 'white';
 
-export interface Flip7Card {
-  id: string;
-  kind: FlipCardKind;
-  numberValue?: number; // 0 ~ 12
-  modifierType?: FlipModifierType;
-  actionType?: FlipActionType;
-  label: string;
-  subLabel: string;
+type GamePhase =
+  | 'SETUP_1_SETTLEMENT'
+  | 'SETUP_1_ROAD'
+  | 'SETUP_2_SETTLEMENT'
+  | 'SETUP_2_ROAD'
+  | 'ROLL_DICE'
+  | 'ROBBER_MOVE'
+  | 'MAIN_TURN'
+  | 'ROAD_BUILDING_CARD'
+  | 'ROUND_OVER'
+  | 'MATCH_OVER';
+
+interface ResourceHand {
+  wood: number;
+  brick: number;
+  sheep: number;
+  wheat: number;
+  ore: number;
 }
 
-export type FlipRoundResult = 'NONE' | 'WIN' | 'FLIP7_WIN' | 'LOSE' | 'BUST' | 'OUT';
+interface HexTile {
+  id: number;
+  q: number;
+  r: number;
+  cx: number;
+  cy: number;
+  terrain: TerrainType;
+  numberToken: number | null;
+}
 
-export interface Flip7Player {
+interface BoardVertex {
+  id: number;
+  x: number;
+  y: number;
+  adjacentHexIds: number[];
+  adjacentVertexIds: number[];
+  adjacentEdgeIds: number[];
+}
+
+interface BoardEdge {
+  id: number;
+  v1: number;
+  v2: number;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+interface CatanBoardData {
+  hexes: HexTile[];
+  vertices: BoardVertex[];
+  edges: BoardEdge[];
+}
+
+interface BuildingSlot {
+  ownerId: string;
+  color: PlayerColor;
+  type: 'settlement' | 'city';
+}
+
+interface RoadSlot {
+  ownerId: string;
+  color: PlayerColor;
+}
+
+interface CatanPlayer {
   id: string;
   name: string;
-  color: string;
-  numberCards: Flip7Card[];
-  modifierCards: Flip7Card[];
-  hasSecondChance: boolean;
+  color: PlayerColor;
   chips: number;
   wins: number;
-  totalPoints: number;
-  currentBet: number;
-  hasPlacedBet: boolean;
-  isStayed: boolean;
-  isBusted: boolean;
-  isFlip7: boolean;
-  isEliminated: boolean; // 판돈 소진 시 아웃
-  roundScore: number;
-  roundResult: FlipRoundResult;
+  resources: ResourceHand;
+  devCards: DevCardType[];
+  newDevCards: DevCardType[]; // 이번 턴에 구매해 다음 턴부터 사용 가능한 카드
+  knightsPlayed: number;
+  devCardPlayedThisTurn: boolean;
+  isEliminated: boolean;
 }
 
 interface WaitlistPlayer {
@@ -56,32 +109,34 @@ interface SpectatorPlayer {
   name: string;
 }
 
-interface PendingActionState {
-  actorId: string;
-  actorName: string;
-  actionType: 'FREEZE' | 'FLIP_THREE';
-  cardLabel: string;
-}
-
-interface NetFlip7RoomData {
+interface NetCatanRoomData {
   roomId: number;
-  status: 'EMPTY' | 'WAITING' | 'BETTING' | 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER';
-  players: Flip7Player[];
+  status: 'EMPTY' | 'WAITING' | 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER';
+  players: CatanPlayer[];
   pot: number;
   waitlist: WaitlistPlayer[];
   spectators: SpectatorPlayer[];
   baseTimeout: number;
-  minBet: number;
+  anteBet: number;
+  targetVP: number;
   roundNumber: number;
-  deck: Flip7Card[];
-  discardPile: Flip7Card[];
-  currentPlayerIdx: number;
-  pendingAction: PendingActionState | null;
+  phase: GamePhase;
+  currentTurnIdx: number;
+  setupStepIdx: number;
+  lastPlacedVertexId: number | null;
+  freeRoadsRemaining: number;
+  dice: [number, number];
+  robberHexId: number;
+  longestRoadOwnerId: string | null;
+  largestArmyOwnerId: string | null;
+  board: CatanBoardData;
+  buildings: Record<string, BuildingSlot>;
+  roads: Record<string, RoadSlot>;
+  devDeck: DevCardType[];
   turnDeadline: number | null;
   turnNotice: string;
   winnerAnnouncement: string;
-  winnersList: string[];
-  waitingSince?: number | null;
+  waitingSince: number | null;
 }
 
 interface HallOfFameRecord {
@@ -98,251 +153,454 @@ interface ChipFlyEffect {
   color: string;
 }
 
-const PLAYER_BG_COLORS = [
-  'radial-gradient(circle at 50% 20%, #1e1b4b 0%, #0f172a 65%, #020617 100%)',
-  'radial-gradient(circle at 50% 20%, #3b0764 0%, #1e1b4b 65%, #020617 100%)',
-  'radial-gradient(circle at 50% 20%, #064e3b 0%, #0f172a 65%, #020617 100%)',
-  'radial-gradient(circle at 50% 20%, #451a03 0%, #1e1b4b 65%, #020617 100%)',
+// =========================================================================
+// 상수 및 한글 메타데이터
+// =========================================================================
+const WOOD_BG_THEMES = [
+  'radial-gradient(circle at top, #5d4037 0%, #3e2723 60%, #261612 100%)',
+  'radial-gradient(circle at top, #4e342e 0%, #321f1a 60%, #1f120e 100%)',
 ];
 
-const PIECE_COLORS = ['#ef4444', '#3b82f6', '#10b981', '#f59e0b'];
 const INITIAL_CHIPS = 10000;
 const DEFAULT_TIMEOUT_SEC = 90;
+const HEX_RADIUS = 56;
 
-const SITUATION_LINES = {
-  BET_START: (round: number) => [
-    `${round}라운드 시작! 판돈을 걸고 행운의 카드를 뒤집으세요!`,
-    `새 라운드가 열렸습니다! 승부사 여러분, 베팅할 칩을 올려주세요.`,
-  ],
-  BET_PLACED: (name: string, amount: number) => [
-    `${name}님이 ${amount.toLocaleString()}칩을 판돈에 걸었습니다!`,
-    `찰칵! ${name}님의 베팅 ${amount.toLocaleString()}칩!`,
-  ],
-  PLAYER_TURN: (name: string) => [
-    `${name}님 차례입니다! 카드를 한 장 더 뒤집을까요(HIT), 멈출까요(STAY)?`,
-    `${name}님의 선택! FLIP 7에 도전하시겠습니까?`,
-  ],
-  HIT_SAFE: (name: string, cardLabel: string) => [
-    `${name}님 [${cardLabel}] 획득! 안전하게 점수를 쌓았습니다.`,
-    `나이스! ${name}님이 [${cardLabel}] 카드를 뽑았습니다!`,
-  ],
-  STAY: (name: string, score: number) => [
-    `${name}님이 멈추고 ${score}점을 안전하게 확정했습니다!`,
-    `현명한 선택! ${name}님 STAY 선언 (${score}점 확정)!`,
-  ],
-  BUST: (name: string, dupNum: number) => [
-    `앗! ${name}님 숫자 [${dupNum}] 중복으로 버스트! 이번 판 0점 처리됩니다.`,
-    `충격! [${dupNum}] 카드가 겹치면서 ${name}님 버스트되었습니다!`,
-  ],
-  SECOND_CHANCE_SAVE: (name: string, dupNum: number) => [
-    `🛡️ 기적! ${name}님이 세컨드 찬스로 중복 숫자 [${dupNum}] 버스트를 방어했습니다!`,
-    `🛡️ 세컨드 찬스 발동! ${name}님이 위기에서 살아남았습니다!`,
-  ],
-  FLIP_7: (name: string) => [
-    `👑 대박!! ${name}님이 서로 다른 숫자 7장을 모아 FLIP 7 (+15점 보너스) 달성!`,
-    `🎊 전설의 FLIP 7 완성! ${name}님이 라운드를 즉시 종료시킵니다!`,
-  ],
+const RESOURCE_KEYS: readonly ResourceType[] = ['wood', 'brick', 'sheep', 'wheat', 'ore'];
+
+const RESOURCE_META: Record<
+  ResourceType,
+  { label: string; icon: string; badgeBg: string; textColor: string }
+> = {
+  wood: { label: '목재', icon: '🌲', badgeBg: '#2e7d32', textColor: '#ffffff' },
+  brick: { label: '벽돌', icon: '🧱', badgeBg: '#c62828', textColor: '#ffffff' },
+  sheep: { label: '양모', icon: '🐑', badgeBg: '#689f38', textColor: '#ffffff' },
+  wheat: { label: '밀', icon: '🌾', badgeBg: '#f9a825', textColor: '#2c1810' },
+  ore: { label: '철광석', icon: '⛰️', badgeBg: '#546e7a', textColor: '#ffffff' },
 };
 
-function pickRandomLine(lines: string[]): string {
-  return lines[Math.floor(Math.random() * lines.length)];
+const TERRAIN_META: Record<
+  TerrainType,
+  { label: string; icon: string; fill: string; stroke: string }
+> = {
+  wood: { label: '숲', icon: '🌲', fill: '#388e3c', stroke: '#1b5e20' },
+  brick: { label: '언덕', icon: '🧱', fill: '#d84315', stroke: '#8e0000' },
+  sheep: { label: '목초지', icon: '🐑', fill: '#8bc34a', stroke: '#558b2f' },
+  wheat: { label: '농지', icon: '🌾', fill: '#fbc02d', stroke: '#f57f17' },
+  ore: { label: '산', icon: '⛰️', fill: '#78909c', stroke: '#37474f' },
+  desert: { label: '사막', icon: '🏜️', fill: '#e6c994', stroke: '#a1887f' },
+};
+
+const PLAYER_COLORS: readonly PlayerColor[] = ['red', 'blue', 'orange', 'white'];
+
+const PLAYER_COLOR_META: Record<PlayerColor, { label: string; hex: string; text: string }> = {
+  red: { label: '빨강', hex: '#d32f2f', text: '#ffffff' },
+  blue: { label: '파랑', hex: '#1976d2', text: '#ffffff' },
+  orange: { label: '주황', hex: '#f57c00', text: '#ffffff' },
+  white: { label: '하양', hex: '#f5f5f5', text: '#2c1810' },
+};
+
+const DEV_CARD_META: Record<DevCardType, { label: string; icon: string; desc: string }> = {
+  knight: { label: '기사', icon: '⚔️', desc: '도둑을 이동시키고 인접 플레이어 자원 1장 약탈' },
+  victory: { label: '승점 (+1)', icon: '🏛️', desc: '공개 즉시 승점 1점 획득' },
+  road_building: { label: '도로 건설', icon: '🛣️', desc: '자원 소모 없이 도로 2개 무료 건설' },
+  year_of_plenty: { label: '풍년', icon: '🌽', desc: '원하는 자원 2장을 은행에서 즉시 획득' },
+  monopoly: { label: '독점', icon: '💰', desc: '지정한 자원 1종류를 모든 플레이어에게서 회수' },
+};
+
+const BUILD_COSTS = {
+  road: { wood: 1, brick: 1, sheep: 0, wheat: 0, ore: 0 },
+  settlement: { wood: 1, brick: 1, sheep: 1, wheat: 1, ore: 0 },
+  city: { wood: 0, brick: 0, sheep: 0, wheat: 2, ore: 3 },
+  devCard: { wood: 0, brick: 0, sheep: 1, wheat: 1, ore: 1 },
+} as const;
+
+// =========================================================================
+// 카탄 유틸리티 및 그래프/룰 엔진
+// =========================================================================
+function createEmptyHand(): ResourceHand {
+  return { wood: 0, brick: 0, sheep: 0, wheat: 0, ore: 0 };
 }
 
-function getShortName(name: string): string {
-  const trimmed = name ? name.trim() : '';
-  return trimmed ? trimmed.slice(0, 2) : '?';
+function getTotalResources(hand: ResourceHand): number {
+  return hand.wood + hand.brick + hand.sheep + hand.wheat + hand.ore;
 }
 
-function createFlip7Deck(): Flip7Card[] {
-  const deck: Flip7Card[] = [];
-  const uid = () => Math.random().toString(36).slice(2, 7);
-
-  deck.push({
-    id: `num-0-${uid()}`,
-    kind: 'NUMBER',
-    numberValue: 0,
-    label: '0',
-    subLabel: 'ZERO',
-  });
-
-  for (let num = 1; num <= 12; num++) {
-    for (let c = 0; c < num; c++) {
-      deck.push({
-        id: `num-${num}-${c}-${uid()}`,
-        kind: 'NUMBER',
-        numberValue: num,
-        label: String(num),
-        subLabel: `${num} PTS`,
-      });
-    }
-  }
-
-  const modifiers: { type: FlipModifierType; label: string; sub: string }[] = [
-    { type: 'PLUS_2', label: '+2', sub: 'BONUS' },
-    { type: 'PLUS_4', label: '+4', sub: 'BONUS' },
-    { type: 'PLUS_6', label: '+6', sub: 'BONUS' },
-    { type: 'PLUS_8', label: '+8', sub: 'BONUS' },
-    { type: 'PLUS_10', label: '+10', sub: 'BONUS' },
-    { type: 'MULTI_2', label: '×2', sub: 'DOUBLE' },
-  ];
-  modifiers.forEach((m) => {
-    deck.push({
-      id: `mod-${m.type}-${uid()}`,
-      kind: 'MODIFIER',
-      modifierType: m.type,
-      label: m.label,
-      subLabel: m.sub,
-    });
-  });
-
-  const actions: { type: FlipActionType; label: string; sub: string }[] = [
-    { type: 'FREEZE', label: '❄️ FREEZE', sub: '즉시 스탠드' },
-    { type: 'FLIP_THREE', label: '⚡ FLIP 3', sub: '강제 3장 뽑기' },
-    { type: 'SECOND_CHANCE', label: '🛡️ 2ND CHANCE', sub: '버스트 1회 방어' },
-  ];
-  actions.forEach((a) => {
-    for (let i = 0; i < 3; i++) {
-      deck.push({
-        id: `act-${a.type}-${i}-${uid()}`,
-        kind: 'ACTION',
-        actionType: a.type,
-        label: a.label,
-        subLabel: a.sub,
-      });
-    }
-  });
-
-  return deck.sort(() => Math.random() - 0.5);
+function hasEnoughResources(hand: ResourceHand, cost: ResourceHand): boolean {
+  return (
+    hand.wood >= cost.wood &&
+    hand.brick >= cost.brick &&
+    hand.sheep >= cost.sheep &&
+    hand.wheat >= cost.wheat &&
+    hand.ore >= cost.ore
+  );
 }
 
-function calculateFlip7RoundScore(
-  player: Pick<Flip7Player, 'numberCards' | 'modifierCards' | 'isBusted' | 'isFlip7'>
-): number {
-  if (player.isBusted) return 0;
-
-  const numberSum = player.numberCards.reduce((acc, c) => acc + (c.numberValue ?? 0), 0);
-  const hasMultiplier = player.modifierCards.some((m) => m.modifierType === 'MULTI_2');
-  let flatBonus = 0;
-
-  for (const m of player.modifierCards) {
-    if (m.modifierType === 'PLUS_2') flatBonus += 2;
-    else if (m.modifierType === 'PLUS_4') flatBonus += 4;
-    else if (m.modifierType === 'PLUS_6') flatBonus += 6;
-    else if (m.modifierType === 'PLUS_8') flatBonus += 8;
-    else if (m.modifierType === 'PLUS_10') flatBonus += 10;
-  }
-
-  const flip7Bonus = player.isFlip7 || player.numberCards.length >= 7 ? 15 : 0;
-  return numberSum * (hasMultiplier ? 2 : 1) + flatBonus + flip7Bonus;
-}
-
-function drawOneCard(
-  deck: Flip7Card[],
-  discardPile: Flip7Card[]
-): { card: Flip7Card; nextDeck: Flip7Card[]; nextDiscard: Flip7Card[] } {
-  let d = [...deck];
-  let disc = [...discardPile];
-  if (d.length === 0) {
-    d = disc.length > 0 ? [...disc].sort(() => Math.random() - 0.5) : createFlip7Deck();
-    disc = [];
-  }
-  const card = d.shift()!;
-  return { card, nextDeck: d, nextDiscard: disc };
-}
-
-function settleFlip7Round(
-  players: Flip7Player[],
-  totalPot: number,
-  minBet: number,
-  isNetMode: boolean
-): {
-  settledPlayers: Flip7Player[];
-  winners: string[];
-  announcement: string;
-  carryOverPot: number;
-  isMatchOver: boolean;
-} {
-  const scoredPlayers = players.map((p) => {
-    if (p.isEliminated) return { ...p, roundScore: 0, roundResult: 'OUT' as FlipRoundResult };
-    const rScore = calculateFlip7RoundScore(p);
-    return { ...p, roundScore: rScore };
-  });
-
-  const nonBusted = scoredPlayers.filter((p) => !p.isEliminated && !p.isBusted && p.roundScore > 0);
-
-  if (nonBusted.length === 0) {
-    const updated = scoredPlayers.map((p) => {
-      if (p.isEliminated) return p;
-      const outNow = isNetMode && p.chips < minBet;
-      return {
-        ...p,
-        isEliminated: outNow,
-        roundResult: (outNow ? 'OUT' : p.isBusted ? 'BUST' : 'LOSE') as FlipRoundResult,
-      };
-    });
-    const survivors = updated.filter((p) => !p.isEliminated);
-    return {
-      settledPlayers: updated,
-      winners: [],
-      announcement: isNetMode
-        ? `💥 유효 득점자가 없습니다! 판돈 ${totalPot.toLocaleString()}칩이 다음 판으로 이월됩니다.`
-        : `💥 전원 버스트 또는 0점으로 무승부입니다!`,
-      carryOverPot: isNetMode ? totalPot : 0,
-      isMatchOver: isNetMode && survivors.length <= 1,
-    };
-  }
-
-  const maxScore = Math.max(...nonBusted.map((p) => p.roundScore));
-  const roundWinners = nonBusted.filter((p) => p.roundScore === maxScore);
-  const winnerNames = roundWinners.map((w) => w.name);
-  const prizePerWinner = isNetMode ? Math.floor(totalPot / roundWinners.length) : 0;
-
-  const finalPlayers = scoredPlayers.map((p) => {
-    if (p.isEliminated) return p;
-    const isWin = !p.isBusted && p.roundScore === maxScore;
-    const nextChips = isWin ? p.chips + prizePerWinner : p.chips;
-    const outNow = isNetMode && nextChips < minBet;
-
-    return {
-      ...p,
-      chips: nextChips,
-      wins: isWin ? p.wins + 1 : p.wins,
-      totalPoints: (p.totalPoints || 0) + p.roundScore,
-      isEliminated: outNow,
-      roundResult: (outNow
-        ? 'OUT'
-        : isWin
-        ? p.isFlip7
-          ? 'FLIP7_WIN'
-          : 'WIN'
-        : p.isBusted
-        ? 'BUST'
-        : 'LOSE') as FlipRoundResult,
-    };
-  });
-
-  const survivors = finalPlayers.filter((p) => !p.isEliminated);
-  const isMatchOver = isNetMode && survivors.length <= 1;
-
-  let announcement = '';
-  if (isMatchOver && survivors.length === 1) {
-    announcement = `👑 최종 우승! ${survivors[0].name}님이 모든 판돈(${survivors[0].chips.toLocaleString()}칩)을 차지하며 최후의 승자가 되었습니다!`;
-  } else if (isNetMode) {
-    announcement = `🎊 ${winnerNames.join(', ')}님 라운드 승리! (${maxScore}점 · 판돈 +${prizePerWinner.toLocaleString()}칩 획득)`;
-  } else {
-    announcement = `🎊 ${winnerNames.join(', ')}님 라운드 승리! (${maxScore}점 획득)`;
-  }
-
+function subtractResources(hand: ResourceHand, cost: ResourceHand): ResourceHand {
   return {
-    settledPlayers: finalPlayers,
-    winners: winnerNames,
-    announcement,
-    carryOverPot: 0,
-    isMatchOver,
+    wood: Math.max(0, hand.wood - cost.wood),
+    brick: Math.max(0, hand.brick - cost.brick),
+    sheep: Math.max(0, hand.sheep - cost.sheep),
+    wheat: Math.max(0, hand.wheat - cost.wheat),
+    ore: Math.max(0, hand.ore - cost.ore),
   };
 }
 
-function createDefaultFlip7Room(roomId: number): NetFlip7RoomData {
+
+function shuffleArray<T>(items: readonly T[]): T[] {
+  const arr = [...items];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function createShuffledDevDeck(): DevCardType[] {
+  const deck: DevCardType[] = [
+    ...Array<DevCardType>(14).fill('knight'),
+    ...Array<DevCardType>(5).fill('victory'),
+    ...Array<DevCardType>(2).fill('road_building'),
+    ...Array<DevCardType>(2).fill('year_of_plenty'),
+    ...Array<DevCardType>(2).fill('monopoly'),
+  ];
+  return shuffleArray(deck);
+}
+
+/**
+ * 19개 육각 타일, 54개 꼭짓점, 72개 변을 기하학적으로 생성
+ */
+function generateCatanBoard(): { board: CatanBoardData; desertHexId: number } {
+  const terrains: TerrainType[] = shuffleArray([
+    'wood',
+    'wood',
+    'wood',
+    'wood',
+    'brick',
+    'brick',
+    'brick',
+    'sheep',
+    'sheep',
+    'sheep',
+    'sheep',
+    'wheat',
+    'wheat',
+    'wheat',
+    'wheat',
+    'ore',
+    'ore',
+    'ore',
+    'desert',
+  ]);
+
+  const numberTokens = shuffleArray([2, 3, 3, 4, 4, 5, 5, 6, 6, 8, 8, 9, 9, 10, 10, 11, 11, 12]);
+
+  const axialCoords: [number, number][] = [];
+  for (let q = -2; q <= 2; q++) {
+    const rMin = Math.max(-2, -q - 2);
+    const rMax = Math.min(2, -q + 2);
+    for (let r = rMin; r <= rMax; r++) {
+      axialCoords.push([q, r]);
+    }
+  }
+
+  let tokenIdx = 0;
+  let desertHexId = 0;
+
+  const hexes: HexTile[] = axialCoords.map(([q, r], id) => {
+    const terrain = terrains[id];
+    const cx = HEX_RADIUS * Math.sqrt(3) * (q + r / 2);
+    const cy = HEX_RADIUS * 1.5 * r;
+    let numberToken: number | null = null;
+
+    if (terrain === 'desert') {
+      desertHexId = id;
+    } else {
+      numberToken = numberTokens[tokenIdx++];
+    }
+
+    return { id, q, r, cx, cy, terrain, numberToken };
+  });
+
+  const vertices: BoardVertex[] = [];
+  const edges: BoardEdge[] = [];
+
+  const findOrCreateVertex = (x: number, y: number, hexId: number): number => {
+    const existing = vertices.find((v) => Math.hypot(v.x - x, v.y - y) < 4);
+    if (existing) {
+      if (!existing.adjacentHexIds.includes(hexId)) {
+        existing.adjacentHexIds.push(hexId);
+      }
+      return existing.id;
+    }
+    const newVertex: BoardVertex = {
+      id: vertices.length,
+      x: Math.round(x * 10) / 10,
+      y: Math.round(y * 10) / 10,
+      adjacentHexIds: [hexId],
+      adjacentVertexIds: [],
+      adjacentEdgeIds: [],
+    };
+    vertices.push(newVertex);
+    return newVertex.id;
+  };
+
+  const findOrCreateEdge = (v1: number, v2: number): number => {
+    const existing = edges.find(
+      (e) => (e.v1 === v1 && e.v2 === v2) || (e.v1 === v2 && e.v2 === v1)
+    );
+    if (existing) return existing.id;
+
+    const vert1 = vertices[v1];
+    const vert2 = vertices[v2];
+    const newEdge: BoardEdge = {
+      id: edges.length,
+      v1,
+      v2,
+      x1: vert1.x,
+      y1: vert1.y,
+      x2: vert2.x,
+      y2: vert2.y,
+    };
+    edges.push(newEdge);
+
+    if (!vert1.adjacentVertexIds.includes(v2)) vert1.adjacentVertexIds.push(v2);
+    if (!vert2.adjacentVertexIds.includes(v1)) vert2.adjacentVertexIds.push(v1);
+    if (!vert1.adjacentEdgeIds.includes(newEdge.id)) vert1.adjacentEdgeIds.push(newEdge.id);
+    if (!vert2.adjacentEdgeIds.includes(newEdge.id)) vert2.adjacentEdgeIds.push(newEdge.id);
+
+    return newEdge.id;
+  };
+
+  for (const hex of hexes) {
+    const cornerIds: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      const angleRad = ((60 * i - 30) * Math.PI) / 180;
+      const vx = hex.cx + HEX_RADIUS * Math.cos(angleRad);
+      const vy = hex.cy + HEX_RADIUS * Math.sin(angleRad);
+      cornerIds.push(findOrCreateVertex(vx, vy, hex.id));
+    }
+    for (let i = 0; i < 6; i++) {
+      findOrCreateEdge(cornerIds[i], cornerIds[(i + 1) % 6]);
+    }
+  }
+
+  return {
+    board: { hexes, vertices, edges },
+    desertHexId,
+  };
+}
+
+/**
+ * 스네이크 드래프트 순서 생성 (예: 3인 -> [0, 1, 2, 2, 1, 0])
+ */
+function getSetupOrder(playerCount: number): number[] {
+  const forward = Array.from({ length: playerCount }, (_, i) => i);
+  const backward = [...forward].reverse();
+  return [...forward, ...backward];
+}
+
+/**
+ * 특정 플레이어의 최장 연속 도로 길이 계산 (DFS 백트래킹)
+ */
+function computeLongestRoadForPlayer(
+  playerId: string,
+  board: CatanBoardData,
+  roads: Record<string, RoadSlot>,
+  buildings: Record<string, BuildingSlot>
+): number {
+  const playerEdges = board.edges.filter((e) => roads[String(e.id)]?.ownerId === playerId);
+  if (playerEdges.length === 0) return 0;
+
+  let maxLen = 0;
+
+  const dfs = (currentVertexId: number, visitedEdges: Set<number>): number => {
+    const vertex = board.vertices[currentVertexId];
+    if (!vertex) return 0;
+
+    // 상대방 마을/도시가 세워진 꼭짓점은 도로 연결 차단
+    const blocker = buildings[String(currentVertexId)];
+    if (blocker && blocker.ownerId !== playerId && visitedEdges.size > 0) {
+      return 0;
+    }
+
+    let best = 0;
+    for (const edgeId of vertex.adjacentEdgeIds) {
+      if (visitedEdges.has(edgeId)) continue;
+      if (roads[String(edgeId)]?.ownerId !== playerId) continue;
+
+      const edge = board.edges[edgeId];
+      const nextVertexId = edge.v1 === currentVertexId ? edge.v2 : edge.v1;
+
+      visitedEdges.add(edgeId);
+      const branchLen = 1 + dfs(nextVertexId, visitedEdges);
+      visitedEdges.delete(edgeId);
+
+      if (branchLen > best) best = branchLen;
+    }
+    return best;
+  };
+
+  for (const edge of playerEdges) {
+    const visited1 = new Set<number>([edge.id]);
+    const len1 = 1 + dfs(edge.v1, visited1);
+    if (len1 > maxLen) maxLen = len1;
+
+    const visited2 = new Set<number>([edge.id]);
+    const len2 = 1 + dfs(edge.v2, visited2);
+    if (len2 > maxLen) maxLen = len2;
+  }
+
+  return maxLen;
+}
+
+/**
+ * 최장 교역로(5개 이상) 보유자 갱신
+ */
+function evaluateLongestRoadOwner(
+  players: CatanPlayer[],
+  currentOwnerId: string | null,
+  board: CatanBoardData,
+  roads: Record<string, RoadSlot>,
+  buildings: Record<string, BuildingSlot>
+): string | null {
+  let bestOwner = currentOwnerId;
+  let bestLength =
+    currentOwnerId != null
+      ? computeLongestRoadForPlayer(currentOwnerId, board, roads, buildings)
+      : 4;
+
+  if (bestLength < 5) {
+    bestOwner = null;
+    bestLength = 4;
+  }
+
+  for (const p of players) {
+    const len = computeLongestRoadForPlayer(p.id, board, roads, buildings);
+    if (len >= 5 && len > bestLength) {
+      bestLength = len;
+      bestOwner = p.id;
+    }
+  }
+  return bestOwner;
+}
+
+/**
+ * 최강 기사단(3장 이상) 보유자 갱신
+ */
+function evaluateLargestArmyOwner(
+  players: CatanPlayer[],
+  currentOwnerId: string | null
+): string | null {
+  let bestOwner = currentOwnerId;
+  let bestCount =
+    currentOwnerId != null
+      ? players.find((p) => p.id === currentOwnerId)?.knightsPlayed ?? 2
+      : 2;
+
+  if (bestCount < 3) {
+    bestOwner = null;
+    bestCount = 2;
+  }
+
+  for (const p of players) {
+    if (p.knightsPlayed >= 3 && p.knightsPlayed > bestCount) {
+      bestCount = p.knightsPlayed;
+      bestOwner = p.id;
+    }
+  }
+  return bestOwner;
+}
+
+/**
+ * 플레이어 현재 총 승점 계산
+ */
+function calculatePlayerVP(
+  player: CatanPlayer,
+  buildings: Record<string, BuildingSlot>,
+  longestRoadOwnerId: string | null,
+  largestArmyOwnerId: string | null
+): number {
+  let vp = 0;
+
+  for (const b of Object.values(buildings)) {
+    if (b.ownerId === player.id) {
+      vp += b.type === 'city' ? 2 : 1;
+    }
+  }
+
+  const allDevCards = [...(player.devCards || []), ...(player.newDevCards || [])];
+  for (const card of allDevCards) {
+    if (card === 'victory') vp += 1;
+  }
+
+  if (longestRoadOwnerId === player.id) vp += 2;
+  if (largestArmyOwnerId === player.id) vp += 2;
+
+  return vp;
+}
+
+/**
+ * 꼭짓점에 마을 건설 가능 여부 (거리 2칸 규칙 + 초기 배치 여부)
+ */
+function canBuildSettlementAt(
+  vertexId: number,
+  playerId: string,
+  board: CatanBoardData,
+  buildings: Record<string, BuildingSlot>,
+  roads: Record<string, RoadSlot>,
+  isSetupPhase: boolean
+): boolean {
+  const vertex = board.vertices[vertexId];
+  if (!vertex) return false;
+  if (buildings[String(vertexId)]) return false;
+
+  // 인접 꼭짓점에 건물이 하나라도 있으면 건설 불가
+  for (const adjVId of vertex.adjacentVertexIds) {
+    if (buildings[String(adjVId)]) return false;
+  }
+
+  if (isSetupPhase) return true;
+
+  // 일반 턴에서는 본인 도로와 연결되어 있어야 함
+  return vertex.adjacentEdgeIds.some((eId) => roads[String(eId)]?.ownerId === playerId);
+}
+
+/**
+ * 변에 도로 건설 가능 여부
+ */
+function canBuildRoadAt(
+  edgeId: number,
+  playerId: string,
+  board: CatanBoardData,
+  buildings: Record<string, BuildingSlot>,
+  roads: Record<string, RoadSlot>,
+  mustTouchVertexId: number | null = null
+): boolean {
+  const edge = board.edges[edgeId];
+  if (!edge) return false;
+  if (roads[String(edgeId)]) return false;
+
+  if (mustTouchVertexId !== null) {
+    return edge.v1 === mustTouchVertexId || edge.v2 === mustTouchVertexId;
+  }
+
+  const endpoints = [edge.v1, edge.v2];
+  for (const vId of endpoints) {
+    const b = buildings[String(vId)];
+    if (b && b.ownerId === playerId) return true;
+    // 상대 건물에 막히지 않은 본인 도로와 연결된 경우
+    if (!b || b.ownerId === playerId) {
+      const vertex = board.vertices[vId];
+      if (vertex.adjacentEdgeIds.some((adjEId) => roads[String(adjEId)]?.ownerId === playerId)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function createDefaultCatanRoom(roomId: number): NetCatanRoomData {
+  const { board, desertHexId } = generateCatanBoard();
   return {
     roomId,
     status: 'EMPTY',
@@ -351,34 +609,51 @@ function createDefaultFlip7Room(roomId: number): NetFlip7RoomData {
     waitlist: [],
     spectators: [],
     baseTimeout: DEFAULT_TIMEOUT_SEC,
-    minBet: 500,
+    anteBet: 1000,
+    targetVP: 10,
     roundNumber: 1,
-    deck: [],
-    discardPile: [],
-    currentPlayerIdx: 0,
-    pendingAction: null,
+    phase: 'SETUP_1_SETTLEMENT',
+    currentTurnIdx: 0,
+    setupStepIdx: 0,
+    lastPlacedVertexId: null,
+    freeRoadsRemaining: 0,
+    dice: [3, 4],
+    robberHexId: desertHexId,
+    longestRoadOwnerId: null,
+    largestArmyOwnerId: null,
+    board,
+    buildings: {},
+    roads: {},
+    devDeck: createShuffledDevDeck(),
     turnDeadline: null,
     turnNotice: '',
     winnerAnnouncement: '',
-    winnersList: [],
     waitingSince: null,
   };
 }
 
+// =========================================================================
+// 메인 컴포넌트
+// =========================================================================
 export default function Page4() {
-  const [appMode, setAppMode] = useState<'HOME' | 'SOLO' | 'NET_LOBBY' | 'NET_ROOM' | 'HALL_OF_FAME'>('HOME');
+  const [appMode, setAppMode] = useState<
+    'HOME' | 'SOLO' | 'NET_LOBBY' | 'NET_ROOM' | 'HALL_OF_FAME'
+  >('HOME');
 
   const [mySessionId] = useState<string>(() => {
-    const saved = sessionStorage.getItem('flip7_net_uid');
+    const saved = sessionStorage.getItem('catan_net_uid');
     if (saved) return saved;
-    const generated = `f7_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    sessionStorage.setItem('flip7_net_uid', generated);
+    const generated = `catan_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    sessionStorage.setItem('catan_net_uid', generated);
     return generated;
   });
 
-  const [rooms, setRooms] = useState<NetFlip7RoomData[]>([1, 2, 3, 4].map(createDefaultFlip7Room));
+  // 넷게임 상태
+  const [rooms, setRooms] = useState<NetCatanRoomData[]>(
+    [1, 2, 3, 4].map(createDefaultCatanRoom)
+  );
   const [selectedRoomId, setSelectedRoomId] = useState<number | null>(null);
-  const [joinModalRoom, setJoinModalRoom] = useState<NetFlip7RoomData | null>(null);
+  const [joinModalRoom, setJoinModalRoom] = useState<NetCatanRoomData | null>(null);
   const [joinPlayerName, setJoinPlayerName] = useState<string>('');
   const [remainingSeconds, setRemainingSeconds] = useState<number>(DEFAULT_TIMEOUT_SEC);
   const [waitingCountdownSec, setWaitingCountdownSec] = useState<number>(420);
@@ -386,62 +661,36 @@ export default function Page4() {
   const lastSpokenNoticeRef = useRef<string>('');
   const lastCountdownSpokenRef = useRef<number | null>(null);
 
-  const [gameState, setGameState] = useState<'SETUP' | 'READY' | 'PLAYING' | 'ROUND_OVER'>('SETUP');
-  const [players, setPlayers] = useState<Flip7Player[]>([
-    {
-      id: '1',
-      name: '플레이어1',
-      color: PIECE_COLORS[0],
-      numberCards: [],
-      modifierCards: [],
-      hasSecondChance: false,
-      chips: INITIAL_CHIPS,
-      wins: 0,
-      totalPoints: 0,
-      currentBet: 0,
-      hasPlacedBet: true,
-      isStayed: false,
-      isBusted: false,
-      isFlip7: false,
-      isEliminated: false,
-      roundScore: 0,
-      roundResult: 'NONE',
-    },
-    {
-      id: '2',
-      name: '플레이어2',
-      color: PIECE_COLORS[1],
-      numberCards: [],
-      modifierCards: [],
-      hasSecondChance: false,
-      chips: INITIAL_CHIPS,
-      wins: 0,
-      totalPoints: 0,
-      currentBet: 0,
-      hasPlacedBet: true,
-      isStayed: false,
-      isBusted: false,
-      isFlip7: false,
-      isEliminated: false,
-      roundScore: 0,
-      roundResult: 'NONE',
-    },
+  // 단독게임(SOLO) 상태
+  const [soloScreen, setSoloScreen] = useState<'SETUP' | 'PLAY'>('SETUP');
+  const [soloPlayerCount, setSoloPlayerCount] = useState<number>(3);
+  const [soloNames, setSoloNames] = useState<string[]>([
+    '개척자 빨강',
+    '항해사 파랑',
+    '상인 주황',
+    '기사 하양',
   ]);
-  const [inputName, setInputName] = useState('');
+  const [soloAnteBet, setSoloAnteBet] = useState<number>(1000);
+  const [soloTargetVP, setSoloTargetVP] = useState<number>(10);
   const [soloTimeoutSec, setSoloTimeoutSec] = useState<number>(DEFAULT_TIMEOUT_SEC);
   const [soloRemainingSec, setSoloRemainingSec] = useState<number>(DEFAULT_TIMEOUT_SEC);
-  const [soloRoundNum, setSoloRoundNum] = useState<number>(1);
-  const [netSelectedBet, setNetSelectedBet] = useState<number>(500);
+  const [soloRoom, setSoloRoom] = useState<NetCatanRoomData>(() => createDefaultCatanRoom(0));
 
-  const [deck, setDeck] = useState<Flip7Card[]>([]);
-  const [discardPile, setDiscardPile] = useState<Flip7Card[]>([]);
-  const [currentPlayerIdx, setCurrentPlayerIdx] = useState<number>(0);
-  const [soloPendingAction, setSoloPendingAction] = useState<PendingActionState | null>(null);
-  const [turnNotice, setTurnNotice] = useState<string>('');
-  const [winnerAnnouncement, setWinnerAnnouncement] = useState<string>('');
+  // 공용 모달/이펙트 상태
+  const [buildMode, setBuildMode] = useState<'NONE' | 'ROAD' | 'SETTLEMENT' | 'CITY'>('NONE');
+  const [tradeModalOpen, setTradeModalOpen] = useState<boolean>(false);
+  const [tradeGiveRes, setTradeGiveRes] = useState<ResourceType>('wood');
+  const [tradeGetRes, setTradeGetRes] = useState<ResourceType>('brick');
+  const [tradeTargetPlayerId, setTradeTargetPlayerId] = useState<string>('BANK');
+
+  const [devEffectModal, setDevEffectModal] = useState<{
+    type: 'year_of_plenty' | 'monopoly';
+    res1: ResourceType;
+    res2: ResourceType;
+  } | null>(null);
+
   const [showFireworks, setShowFireworks] = useState<boolean>(false);
   const [chipFlyEffects, setChipFlyEffects] = useState<ChipFlyEffect[]>([]);
-
   const [toast, setToast] = useState<{
     id: number;
     text: string;
@@ -466,12 +715,12 @@ export default function Page4() {
     }
     const utterance = new SpeechSynthesisUtterance(cleanText);
     utterance.lang = 'ko-KR';
-    utterance.rate = 1.1;
+    utterance.rate = 1.12;
     utterance.pitch = 1.05;
     window.speechSynthesis.speak(utterance);
   };
 
-  const playSound = (kind: 'flip' | 'chip' | 'bust' | 'win' | 'tick' | 'action') => {
+  const playSound = (kind: 'dice' | 'build' | 'chip' | 'win' | 'tick' | 'robber') => {
     try {
       const AudioCtx =
         window.AudioContext ||
@@ -486,25 +735,25 @@ export default function Page4() {
       }
 
       const notesMap: Record<typeof kind, number[]> = {
-        flip: [520, 720],
+        dice: [320, 480, 390, 560],
+        build: [261.63, 392.0, 523.25],
         chip: [880, 1174.66],
-        bust: [290, 195],
-        action: [660, 880, 660],
         win: [523.25, 659.25, 783.99, 1046.5, 1318.5],
         tick: [987.77],
+        robber: [196.0, 146.83],
       };
 
       notesMap[kind].forEach((freq, idx) => {
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
-        osc.type = kind === 'bust' ? 'sawtooth' : kind === 'chip' ? 'sine' : 'triangle';
-        osc.frequency.setValueAtTime(freq, ctx.currentTime + idx * 0.07);
-        gain.gain.setValueAtTime(kind === 'tick' ? 0.16 : 0.14, ctx.currentTime + idx * 0.07);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + idx * 0.07 + 0.22);
+        osc.type = kind === 'robber' ? 'sawtooth' : 'triangle';
+        osc.frequency.setValueAtTime(freq, ctx.currentTime + idx * 0.055);
+        gain.gain.setValueAtTime(0.16, ctx.currentTime + idx * 0.055);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + idx * 0.055 + 0.18);
         osc.connect(gain);
         gain.connect(ctx.destination);
-        osc.start(ctx.currentTime + idx * 0.07);
-        osc.stop(ctx.currentTime + idx * 0.07 + 0.22);
+        osc.start(ctx.currentTime + idx * 0.055);
+        osc.stop(ctx.currentTime + idx * 0.055 + 0.18);
       });
     } catch {
       // 오디오 차단 예외 무시
@@ -542,8 +791,11 @@ export default function Page4() {
     }
   };
 
-  const saveHallOfFameRecord = (type: 'SOLO' | 'NET', record: { name: string; scoreOrLevel: string }) => {
-    const key = type === 'SOLO' ? 'flip7_hof_solo' : 'flip7_hof_net';
+  const saveHallOfFameRecord = (
+    type: 'SOLO' | 'NET',
+    record: { name: string; scoreOrLevel: string }
+  ) => {
+    const key = type === 'SOLO' ? 'catan_hof_solo' : 'catan_hof_net';
     try {
       const existing: HallOfFameRecord[] = JSON.parse(localStorage.getItem(key) || '[]');
       const newEntry: HallOfFameRecord = {
@@ -560,7 +812,7 @@ export default function Page4() {
   };
 
   const getHallOfFameRecords = (type: 'SOLO' | 'NET'): HallOfFameRecord[] => {
-    const key = type === 'SOLO' ? 'flip7_hof_solo' : 'flip7_hof_net';
+    const key = type === 'SOLO' ? 'catan_hof_solo' : 'catan_hof_net';
     try {
       return JSON.parse(localStorage.getItem(key) || '[]');
     } catch {
@@ -568,337 +820,557 @@ export default function Page4() {
     }
   };
 
-  const applyDrawnCardToPlayer = (
-    allPlayers: Flip7Player[],
-    targetIdx: number,
-    currentDeck: Flip7Card[],
-    currentDiscard: Flip7Card[],
-    actorIdx: number
-  ): {
-    updatedPlayers: Flip7Player[];
-    nextDeck: Flip7Card[];
-    nextDiscard: Flip7Card[];
-    notice: string;
-    immediateRoundEnd: boolean;
-    pendingAction: PendingActionState | null;
-    soundToPlay: 'flip' | 'bust' | 'action' | 'win';
-  } => {
-    const playersCopy = allPlayers.map((p) => ({
-      ...p,
-      numberCards: [...(p.numberCards || [])],
-      modifierCards: [...(p.modifierCards || [])],
-    }));
-    const target = playersCopy[targetIdx];
-    const actor = playersCopy[actorIdx];
-
-    const { card, nextDeck, nextDiscard } = drawOneCard(currentDeck, currentDiscard);
-
-    if (card.kind === 'NUMBER') {
-      const val = card.numberValue ?? 0;
-      const isDuplicate = target.numberCards.some((c) => c.numberValue === val);
-
-      if (isDuplicate) {
-        if (target.hasSecondChance) {
-          target.hasSecondChance = false;
-          nextDiscard.push(card);
+  // =========================================================================
+  // 카탄 게임 상태 전이 순수 로직 (단독/넷게임 공용)
+  // =========================================================================
+  const checkVictoryAndSettle = (
+    room: NetCatanRoomData,
+    modeType: 'SOLO' | 'NET'
+  ): boolean => {
+    for (const p of room.players) {
+      const vp = calculatePlayerVP(
+        p,
+        room.buildings || {},
+        room.longestRoadOwnerId,
+        room.largestArmyOwnerId
+      );
+      if (vp >= room.targetVP) {
+        const wonPot = room.pot || 0;
+        room.players = room.players.map((pl) => {
+          const isWinner = pl.id === p.id;
+          const updatedChips = isWinner ? pl.chips + wonPot : pl.chips;
           return {
-            updatedPlayers: playersCopy,
-            nextDeck,
-            nextDiscard,
-            notice: pickRandomLine(SITUATION_LINES.SECOND_CHANCE_SAVE(target.name, val)),
-            immediateRoundEnd: false,
-            pendingAction: null,
-            soundToPlay: 'action',
+            ...pl,
+            chips: updatedChips,
+            wins: isWinner ? (pl.wins || 0) + 1 : pl.wins || 0,
+            isEliminated: updatedChips <= 0,
           };
-        } else {
-          target.numberCards.push(card);
-          target.isBusted = true;
-          target.isStayed = true;
-          target.roundScore = 0;
-          return {
-            updatedPlayers: playersCopy,
-            nextDeck,
-            nextDiscard,
-            notice: pickRandomLine(SITUATION_LINES.BUST(target.name, val)),
-            immediateRoundEnd: false,
-            pendingAction: null,
-            soundToPlay: 'bust',
-          };
+        });
+        const winnerObj = room.players.find((pl) => pl.id === p.id)!;
+        const anyBusted = room.players.some((pl) => pl.isEliminated);
+
+        room.pot = 0;
+        room.turnDeadline = null;
+        room.turnNotice = '';
+        room.phase = anyBusted ? 'MATCH_OVER' : 'ROUND_OVER';
+        room.status = anyBusted ? 'MATCH_OVER' : 'ROUND_OVER';
+        room.winnerAnnouncement = anyBusted
+          ? `👑 카탄 최종 정복! ${p.name}님이 ${vp}점으로 승리하며 상대 판돈을 모두 소진시켰습니다!`
+          : `🎊 ${p.name}님 ${vp}점 달성 승리! 판돈 ${wonPot.toLocaleString()}칩 독식! (${winnerObj.wins}승 · ${winnerObj.chips.toLocaleString()}칩)`;
+
+        saveHallOfFameRecord(modeType, {
+          name: p.name,
+          scoreOrLevel: `${vp}VP · ${winnerObj.wins}승 · ${winnerObj.chips.toLocaleString()}칩`,
+        });
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const applySettlementPlacement = (
+    room: NetCatanRoomData,
+    playerId: string,
+    vertexId: number,
+    modeType: 'SOLO' | 'NET'
+  ): string | null => {
+    const actor = room.players[room.currentTurnIdx];
+    if (!actor || actor.id !== playerId) return '현재 차례가 아닙니다.';
+
+    const isSetup =
+      room.phase === 'SETUP_1_SETTLEMENT' || room.phase === 'SETUP_2_SETTLEMENT';
+    if (!isSetup && room.phase !== 'MAIN_TURN') return '지금은 마을을 건설할 수 없습니다.';
+
+    if (!room.buildings) room.buildings = {};
+    if (!room.roads) room.roads = {};
+
+    if (!canBuildSettlementAt(vertexId, playerId, room.board, room.buildings, room.roads, isSetup)) {
+      return '거리 규칙(인접 교차로 비어있음) 또는 도로 연결 조건이 맞지 않습니다.';
+    }
+
+    if (!isSetup) {
+      if (!hasEnoughResources(actor.resources, BUILD_COSTS.settlement)) {
+        return '자원이 부족합니다. (목재1, 벽돌1, 양모1, 밀1 필요)';
+      }
+      actor.resources = subtractResources(actor.resources, BUILD_COSTS.settlement);
+    }
+
+    room.buildings[String(vertexId)] = {
+      ownerId: actor.id,
+      color: actor.color,
+      type: 'settlement',
+    };
+    room.lastPlacedVertexId = vertexId;
+
+    // 2차 초기 배치일 경우 인접 지형 자원 즉시 지급
+    if (room.phase === 'SETUP_2_SETTLEMENT') {
+      const vertex = room.board.vertices[vertexId];
+      const gained: string[] = [];
+      for (const hexId of vertex.adjacentHexIds) {
+        const hex = room.board.hexes[hexId];
+        if (hex && hex.terrain !== 'desert') {
+          actor.resources[hex.terrain] += 1;
+          gained.push(`${RESOURCE_META[hex.terrain].icon}${RESOURCE_META[hex.terrain].label}`);
         }
       }
+      room.phase = 'SETUP_2_ROAD';
+      room.turnDeadline = Date.now() + room.baseTimeout * 1000;
+      room.turnNotice = `🏡 ${actor.name}님이 2차 마을 건설! 초기 자원(${
+        gained.join(', ') || '없음'
+      }) 획득! 인접한 변에 도로를 놓으세요.`;
+      return null;
+    }
 
-      target.numberCards.push(card);
-      if (target.numberCards.length >= 7) {
-        target.isFlip7 = true;
-        target.isStayed = true;
-        target.roundScore = calculateFlip7RoundScore(target);
-        return {
-          updatedPlayers: playersCopy,
-          nextDeck,
-          nextDiscard,
-          notice: pickRandomLine(SITUATION_LINES.FLIP_7(target.name)),
-          immediateRoundEnd: true,
-          pendingAction: null,
-          soundToPlay: 'win',
-        };
+    if (room.phase === 'SETUP_1_SETTLEMENT') {
+      room.phase = 'SETUP_1_ROAD';
+      room.turnDeadline = Date.now() + room.baseTimeout * 1000;
+      room.turnNotice = `🏡 ${actor.name}님이 1차 마을 건설! 방금 지은 마을에 이어서 도로를 놓으세요.`;
+      return null;
+    }
+
+    // 최장 교역로 재평가 (상대 마을이 도로를 끊었을 수 있음)
+    room.longestRoadOwnerId = evaluateLongestRoadOwner(
+      room.players,
+      room.longestRoadOwnerId,
+      room.board,
+      room.roads,
+      room.buildings
+    );
+    room.turnNotice = `🏡 ${actor.name}님이 새 마을을 건설했습니다! (+1 승점)`;
+    checkVictoryAndSettle(room, modeType);
+    return null;
+  };
+
+  const applyRoadPlacement = (
+    room: NetCatanRoomData,
+    playerId: string,
+    edgeId: number,
+    modeType: 'SOLO' | 'NET'
+  ): string | null => {
+    const actor = room.players[room.currentTurnIdx];
+    if (!actor || actor.id !== playerId) return '현재 차례가 아닙니다.';
+
+    const isSetupRoad = room.phase === 'SETUP_1_ROAD' || room.phase === 'SETUP_2_ROAD';
+    const isFreeCardRoad = room.phase === 'ROAD_BUILDING_CARD';
+
+    if (!isSetupRoad && !isFreeCardRoad && room.phase !== 'MAIN_TURN') {
+      return '지금은 도로를 건설할 수 없습니다.';
+    }
+
+    if (!room.buildings) room.buildings = {};
+    if (!room.roads) room.roads = {};
+
+    const mustTouchVertex = isSetupRoad ? room.lastPlacedVertexId : null;
+    if (!canBuildRoadAt(edgeId, playerId, room.board, room.buildings, room.roads, mustTouchVertex)) {
+      return '본인의 마을이나 기존 도로와 연결된 변에만 건설할 수 있습니다.';
+    }
+
+    if (!isSetupRoad && !isFreeCardRoad) {
+      if (!hasEnoughResources(actor.resources, BUILD_COSTS.road)) {
+        return '자원이 부족합니다. (목재1, 벽돌1 필요)';
       }
-
-      target.roundScore = calculateFlip7RoundScore(target);
-      return {
-        updatedPlayers: playersCopy,
-        nextDeck,
-        nextDiscard,
-        notice: `🃏 ${pickRandomLine(SITUATION_LINES.HIT_SAFE(target.name, card.label))}`,
-        immediateRoundEnd: false,
-        pendingAction: null,
-        soundToPlay: 'flip',
-      };
+      actor.resources = subtractResources(actor.resources, BUILD_COSTS.road);
     }
 
-    if (card.kind === 'MODIFIER') {
-      target.modifierCards.push(card);
-      target.roundScore = calculateFlip7RoundScore(target);
-      return {
-        updatedPlayers: playersCopy,
-        nextDeck,
-        nextDiscard,
-        notice: `✨ ${target.name}님이 보너스 카드 [${card.label}]을 획득했습니다!`,
-        immediateRoundEnd: false,
-        pendingAction: null,
-        soundToPlay: 'flip',
-      };
-    }
+    room.roads[String(edgeId)] = {
+      ownerId: actor.id,
+      color: actor.color,
+    };
 
-    if (card.actionType === 'SECOND_CHANCE') {
-      if (!target.hasSecondChance) {
-        target.hasSecondChance = true;
-        return {
-          updatedPlayers: playersCopy,
-          nextDeck,
-          nextDiscard,
-          notice: `🛡️ ${target.name}님이 [세컨드 찬스] 카드를 확보했습니다! (버스트 1회 방어)`,
-          immediateRoundEnd: false,
-          pendingAction: null,
-          soundToPlay: 'action',
-        };
-      } else {
-        const candidateIdx = playersCopy.findIndex(
-          (p, idx) =>
-            idx !== targetIdx &&
-            !p.isEliminated &&
-            !p.isBusted &&
-            !p.isStayed &&
-            !p.hasSecondChance
-        );
-        if (candidateIdx !== -1) {
-          playersCopy[candidateIdx].hasSecondChance = true;
-          return {
-            updatedPlayers: playersCopy,
-            nextDeck,
-            nextDiscard,
-            notice: `🛡️ ${target.name}님이 중복된 [세컨드 찬스]를 ${playersCopy[candidateIdx].name}님에게 전달했습니다!`,
-            immediateRoundEnd: false,
-            pendingAction: null,
-            soundToPlay: 'action',
-          };
-        }
-        nextDiscard.push(card);
-        return {
-          updatedPlayers: playersCopy,
-          nextDeck,
-          nextDiscard,
-          notice: `🛡️ 이미 세컨드 찬스를 보유 중이어서 카드가 버려졌습니다.`,
-          immediateRoundEnd: false,
-          pendingAction: null,
-          soundToPlay: 'flip',
-        };
-      }
-    }
-
-    const eligibleTargets = playersCopy.filter(
-      (p) => !p.isEliminated && !p.isBusted && !p.isStayed
+    room.longestRoadOwnerId = evaluateLongestRoadOwner(
+      room.players,
+      room.longestRoadOwnerId,
+      room.board,
+      room.roads,
+      room.buildings
     );
 
-    if (eligibleTargets.length === 1) {
-      const soloTargetIdx = playersCopy.findIndex((p) => p.id === eligibleTargets[0].id);
-      if (card.actionType === 'FREEZE') {
-        playersCopy[soloTargetIdx].isStayed = true;
-        playersCopy[soloTargetIdx].roundScore = calculateFlip7RoundScore(playersCopy[soloTargetIdx]);
-        nextDiscard.push(card);
-        return {
-          updatedPlayers: playersCopy,
-          nextDeck,
-          nextDiscard,
-          notice: `❄️ [FREEZE] 발동! ${playersCopy[soloTargetIdx].name}님이 즉시 스탠드 처리되었습니다!`,
-          immediateRoundEnd: false,
-          pendingAction: null,
-          soundToPlay: 'action',
-        };
+    if (isSetupRoad) {
+      const order = getSetupOrder(room.players.length);
+      const nextStep = room.setupStepIdx + 1;
+
+      if (nextStep < order.length) {
+        room.setupStepIdx = nextStep;
+        room.currentTurnIdx = order[nextStep];
+        const isSecondRound = nextStep >= room.players.length;
+        room.phase = isSecondRound ? 'SETUP_2_SETTLEMENT' : 'SETUP_1_SETTLEMENT';
+        room.lastPlacedVertexId = null;
+        room.turnDeadline = Date.now() + room.baseTimeout * 1000;
+        const nextPlayer = room.players[room.currentTurnIdx];
+        room.turnNotice = `🧭 [초기 배치 ${nextStep + 1}/${order.length}] ${nextPlayer.name}님 차례! 마을을 배치할 교차로를 클릭하세요.`;
       } else {
-        return executeFlipThreeOnTarget(playersCopy, soloTargetIdx, nextDeck, [...nextDiscard, card]);
+        // 초기 배치 완료 -> 1번 플레이어 주사위 굴리기 시작
+        room.currentTurnIdx = 0;
+        room.phase = 'ROLL_DICE';
+        room.lastPlacedVertexId = null;
+        room.turnDeadline = Date.now() + room.baseTimeout * 1000;
+        room.turnNotice = `🎲 모든 초기 배치가 끝났습니다! ${room.players[0].name}님 주사위를 굴려주세요!`;
+      }
+      return null;
+    }
+
+    if (isFreeCardRoad) {
+      const left = (room.freeRoadsRemaining || 1) - 1;
+      if (left > 0) {
+        room.freeRoadsRemaining = left;
+        room.turnNotice = `🛣️ 도로 건설 카드 효과! 무료 도로 1개를 더 배치하세요.`;
+      } else {
+        room.freeRoadsRemaining = 0;
+        room.phase = 'MAIN_TURN';
+        room.turnNotice = `🛣️ ${actor.name}님이 도로 2개 무료 건설을 완료했습니다!`;
+      }
+      checkVictoryAndSettle(room, modeType);
+      return null;
+    }
+
+    room.turnNotice = `🛣️ ${actor.name}님이 도로를 건설했습니다!`;
+    checkVictoryAndSettle(room, modeType);
+    return null;
+  };
+
+  const applyCityUpgrade = (
+    room: NetCatanRoomData,
+    playerId: string,
+    vertexId: number,
+    modeType: 'SOLO' | 'NET'
+  ): string | null => {
+    const actor = room.players[room.currentTurnIdx];
+    if (!actor || actor.id !== playerId) return '현재 차례가 아닙니다.';
+    if (room.phase !== 'MAIN_TURN') return '주사위를 굴린 후 본 턴에서만 도시로 업그레이드할 수 있습니다.';
+
+    const slot = room.buildings?.[String(vertexId)];
+    if (!slot || slot.ownerId !== playerId || slot.type !== 'settlement') {
+      return '본인의 기존 마을을 선택해야 도시로 업그레이드할 수 있습니다.';
+    }
+
+    if (!hasEnoughResources(actor.resources, BUILD_COSTS.city)) {
+      return '자원이 부족합니다. (밀2, 철광석3 필요)';
+    }
+
+    actor.resources = subtractResources(actor.resources, BUILD_COSTS.city);
+    slot.type = 'city';
+    room.turnNotice = `🏰 ${actor.name}님이 마을을 도시로 업그레이드했습니다! (자원 2배 생산 · +2 승점)`;
+    checkVictoryAndSettle(room, modeType);
+    return null;
+  };
+
+  const applyDiceRoll = (room: NetCatanRoomData, playerId: string) => {
+    const actor = room.players[room.currentTurnIdx];
+    if (!actor || actor.id !== playerId || room.phase !== 'ROLL_DICE') return;
+
+    const d1 = Math.floor(Math.random() * 6) + 1;
+    const d2 = Math.floor(Math.random() * 6) + 1;
+    const sum = d1 + d2;
+    room.dice = [d1, d2];
+    room.turnDeadline = Date.now() + room.baseTimeout * 1000;
+
+    if (sum === 7) {
+      // 7이 나오면 7장 초과 보유자 절반 자동 버림 + 도둑 이동 단계
+      const discardedLogs: string[] = [];
+      for (const p of room.players) {
+        const total = getTotalResources(p.resources);
+        if (total > 7) {
+          const dropCount = Math.floor(total / 2);
+          let dropped = 0;
+          while (dropped < dropCount) {
+            const avail = RESOURCE_KEYS.filter((k) => p.resources[k] > 0);
+            if (avail.length === 0) break;
+            const pick = avail[Math.floor(Math.random() * avail.length)];
+            p.resources[pick] -= 1;
+            dropped++;
+          }
+          discardedLogs.push(`${p.name}(-${dropCount}장)`);
+        }
+      }
+
+      room.phase = 'ROBBER_MOVE';
+      const discardMsg =
+        discardedLogs.length > 0 ? ` [7장 초과 반납: ${discardedLogs.join(', ')}]` : '';
+      room.turnNotice = `🏴‍☠️ 주사위 7!${discardMsg} ${actor.name}님, 도둑을 이동시킬 육각 타일을 클릭하세요!`;
+      return;
+    }
+
+    // 해당 숫자 타일 인접 건물에 자원 생산
+    const gainsByPlayer: Record<string, string[]> = {};
+    for (const hex of room.board.hexes) {
+      if (hex.id === room.robberHexId) continue;
+      if (hex.numberToken !== sum || hex.terrain === 'desert') continue;
+
+      const resType = hex.terrain;
+      for (const vertex of room.board.vertices) {
+        if (!vertex.adjacentHexIds.includes(hex.id)) continue;
+        const b = room.buildings?.[String(vertex.id)];
+        if (!b) continue;
+
+        const targetPlayer = room.players.find((p) => p.id === b.ownerId);
+        if (!targetPlayer) continue;
+
+        const amount = b.type === 'city' ? 2 : 1;
+        targetPlayer.resources[resType] += amount;
+
+        if (!gainsByPlayer[targetPlayer.name]) gainsByPlayer[targetPlayer.name] = [];
+        gainsByPlayer[targetPlayer.name].push(
+          `${RESOURCE_META[resType].icon}${RESOURCE_META[resType].label}+${amount}`
+        );
       }
     }
 
-    nextDiscard.push(card);
-    return {
-      updatedPlayers: playersCopy,
-      nextDeck,
-      nextDiscard,
-      notice: `⚡ ${actor.name}님이 [${card.label}] 카드를 뽑았습니다! 적용할 플레이어를 선택하세요!`,
-      immediateRoundEnd: false,
-      pendingAction: {
-        actorId: actor.id,
-        actorName: actor.name,
-        actionType: card.actionType === 'FREEZE' ? 'FREEZE' : 'FLIP_THREE',
-        cardLabel: card.label,
-      },
-      soundToPlay: 'action',
-    };
+    const summary = Object.entries(gainsByPlayer)
+      .map(([name, items]) => `${name}(${items.join(' ')})`)
+      .join(', ');
+
+    room.phase = 'MAIN_TURN';
+    room.turnNotice = summary
+      ? `🎲 주사위 [${sum}]! 생산: ${summary} 👉 ${actor.name}님 건설 및 거래 시간!`
+      : `🎲 주사위 [${sum}]! 생산된 자원이 없습니다. 👉 ${actor.name}님 건설 및 거래 시간!`;
   };
 
-  const executeFlipThreeOnTarget = (
-    allPlayers: Flip7Player[],
-    targetIdx: number,
-    currentDeck: Flip7Card[],
-    currentDiscard: Flip7Card[]
-  ): {
-    updatedPlayers: Flip7Player[];
-    nextDeck: Flip7Card[];
-    nextDiscard: Flip7Card[];
-    notice: string;
-    immediateRoundEnd: boolean;
-    pendingAction: PendingActionState | null;
-    soundToPlay: 'flip' | 'bust' | 'action' | 'win';
-  } => {
-    const pList = allPlayers.map((p) => ({
-      ...p,
-      numberCards: [...(p.numberCards || [])],
-      modifierCards: [...(p.modifierCards || [])],
-    }));
-    let d = [...currentDeck];
-    let disc = [...currentDiscard];
-    const targetName = pList[targetIdx].name;
-    const drawnLabels: string[] = [];
+  const applyRobberMove = (room: NetCatanRoomData, playerId: string, targetHexId: number) => {
+    const actor = room.players[room.currentTurnIdx];
+    if (!actor || actor.id !== playerId || room.phase !== 'ROBBER_MOVE') return;
+    if (targetHexId === room.robberHexId) return;
 
-    for (let step = 0; step < 3; step++) {
-      if (pList[targetIdx].isBusted || pList[targetIdx].isStayed || pList[targetIdx].isFlip7) {
-        break;
-      }
-      const { card, nextDeck, nextDiscard } = drawOneCard(d, disc);
-      d = nextDeck;
-      disc = nextDiscard;
-      drawnLabels.push(card.label);
+    room.robberHexId = targetHexId;
+    room.phase = 'MAIN_TURN';
+    room.turnDeadline = Date.now() + room.baseTimeout * 1000;
 
-      if (card.kind === 'NUMBER') {
-        const val = card.numberValue ?? 0;
-        const dup = pList[targetIdx].numberCards.some((c) => c.numberValue === val);
-        if (dup) {
-          if (pList[targetIdx].hasSecondChance) {
-            pList[targetIdx].hasSecondChance = false;
-            disc.push(card);
-          } else {
-            pList[targetIdx].numberCards.push(card);
-            pList[targetIdx].isBusted = true;
-            pList[targetIdx].isStayed = true;
-            pList[targetIdx].roundScore = 0;
-            return {
-              updatedPlayers: pList,
-              nextDeck: d,
-              nextDiscard: disc,
-              notice: `⚡ [FLIP 3] ${targetName}님이 (${drawnLabels.join(', ')})를 뽑다 숫자 [${val}] 중복으로 버스트!`,
-              immediateRoundEnd: false,
-              pendingAction: null,
-              soundToPlay: 'bust',
-            };
-          }
-        } else {
-          pList[targetIdx].numberCards.push(card);
-          if (pList[targetIdx].numberCards.length >= 7) {
-            pList[targetIdx].isFlip7 = true;
-            pList[targetIdx].isStayed = true;
-            pList[targetIdx].roundScore = calculateFlip7RoundScore(pList[targetIdx]);
-            return {
-              updatedPlayers: pList,
-              nextDeck: d,
-              nextDiscard: disc,
-              notice: `👑 [FLIP 3] 중 ${targetName}님이 숫자 7장을 완성하며 FLIP 7 달성!`,
-              immediateRoundEnd: true,
-              pendingAction: null,
-              soundToPlay: 'win',
-            };
-          }
-        }
-      } else if (card.kind === 'MODIFIER') {
-        pList[targetIdx].modifierCards.push(card);
-      } else if (card.actionType === 'SECOND_CHANCE') {
-        if (!pList[targetIdx].hasSecondChance) {
-          pList[targetIdx].hasSecondChance = true;
-        } else {
-          disc.push(card);
-        }
-      } else if (card.actionType === 'FREEZE') {
-        pList[targetIdx].isStayed = true;
-        disc.push(card);
-        break;
-      } else {
-        disc.push(card);
+    // 도둑 타일에 인접한 상대 플레이어 중 자원 1장 약탈
+    const victimIds = new Set<string>();
+    for (const v of room.board.vertices) {
+      if (!v.adjacentHexIds.includes(targetHexId)) continue;
+      const b = room.buildings?.[String(v.id)];
+      if (b && b.ownerId !== actor.id) {
+        victimIds.add(b.ownerId);
       }
     }
 
-    pList[targetIdx].roundScore = calculateFlip7RoundScore(pList[targetIdx]);
-    return {
-      updatedPlayers: pList,
-      nextDeck: d,
-      nextDiscard: disc,
-      notice: `⚡ [FLIP 3] ${targetName}님이 [${drawnLabels.join(', ')}] 카드를 강제로 뽑았습니다!`,
-      immediateRoundEnd: false,
-      pendingAction: null,
-      soundToPlay: 'action',
-    };
+    const victimsWithCards = room.players.filter(
+      (p) => victimIds.has(p.id) && getTotalResources(p.resources) > 0
+    );
+
+    if (victimsWithCards.length > 0) {
+      const victim = victimsWithCards[Math.floor(Math.random() * victimsWithCards.length)];
+      const avail = RESOURCE_KEYS.filter((k) => victim.resources[k] > 0);
+      const stolenRes = avail[Math.floor(Math.random() * avail.length)];
+      victim.resources[stolenRes] -= 1;
+      actor.resources[stolenRes] += 1;
+      room.turnNotice = `🏴‍☠️ ${actor.name}님이 도둑을 이동시키고 ${victim.name}님에게서 ${RESOURCE_META[stolenRes].icon}${RESOURCE_META[stolenRes].label} 1장을 약탈했습니다!`;
+    } else {
+      room.turnNotice = `🏴‍☠️ ${actor.name}님이 도둑을 이동시켰습니다! 건설 및 거래를 진행하세요.`;
+    }
   };
 
+  const applyBuyDevCard = (
+    room: NetCatanRoomData,
+    playerId: string,
+    modeType: 'SOLO' | 'NET'
+  ): string | null => {
+    const actor = room.players[room.currentTurnIdx];
+    if (!actor || actor.id !== playerId) return '현재 차례가 아닙니다.';
+    if (room.phase !== 'MAIN_TURN') return '주사위를 굴린 후 구매할 수 있습니다.';
+    if (!room.devDeck || room.devDeck.length === 0) return '남은 발전 카드가 없습니다.';
+    if (!hasEnoughResources(actor.resources, BUILD_COSTS.devCard)) {
+      return '자원이 부족합니다. (양모1, 밀1, 철광석1 필요)';
+    }
+
+    actor.resources = subtractResources(actor.resources, BUILD_COSTS.devCard);
+    const drawn = room.devDeck.shift()!;
+
+    if (!actor.newDevCards) actor.newDevCards = [];
+    actor.newDevCards.push(drawn);
+
+    room.turnNotice = `📜 ${actor.name}님이 발전 카드를 1장 구매했습니다!`;
+    checkVictoryAndSettle(room, modeType);
+    return null;
+  };
+
+  const applyPlayDevCard = (
+    room: NetCatanRoomData,
+    playerId: string,
+    cardType: DevCardType,
+    extra?: { res1?: ResourceType; res2?: ResourceType }
+  ): string | null => {
+    const actor = room.players[room.currentTurnIdx];
+    if (!actor || actor.id !== playerId) return '현재 차례가 아닙니다.';
+    if (room.phase !== 'MAIN_TURN' && room.phase !== 'ROLL_DICE') {
+      return '지금은 발전 카드를 사용할 수 없습니다.';
+    }
+    if (cardType === 'victory') return '승점 카드는 자동 반영됩니다.';
+    if (actor.devCardPlayedThisTurn) return '한 턴에 발전 카드는 1장만 사용할 수 있습니다.';
+
+    const idx = (actor.devCards || []).indexOf(cardType);
+    if (idx === -1) return '사용 가능한 해당 발전 카드가 없습니다. (구매한 턴에는 사용 불가)';
+
+    actor.devCards.splice(idx, 1);
+    actor.devCardPlayedThisTurn = true;
+
+    if (cardType === 'knight') {
+      actor.knightsPlayed = (actor.knightsPlayed || 0) + 1;
+      room.largestArmyOwnerId = evaluateLargestArmyOwner(room.players, room.largestArmyOwnerId);
+      room.phase = 'ROBBER_MOVE';
+      room.turnNotice = `⚔️ ${actor.name}님이 기사 카드를 발동! (누적 ${actor.knightsPlayed}회) 도둑을 이동시킬 타일을 클릭하세요!`;
+      return null;
+    }
+
+    if (cardType === 'road_building') {
+      room.phase = 'ROAD_BUILDING_CARD';
+      room.freeRoadsRemaining = 2;
+      room.turnNotice = `🛣️ ${actor.name}님이 도로 건설 카드를 발동! 무료 도로 2개를 배치하세요.`;
+      return null;
+    }
+
+    if (cardType === 'year_of_plenty' && extra?.res1 && extra?.res2) {
+      actor.resources[extra.res1] += 1;
+      actor.resources[extra.res2] += 1;
+      room.turnNotice = `🌽 ${actor.name}님이 풍년 카드로 ${RESOURCE_META[extra.res1].label}, ${RESOURCE_META[extra.res2].label} 자원을 획득했습니다!`;
+      return null;
+    }
+
+    if (cardType === 'monopoly' && extra?.res1) {
+      const targetRes = extra.res1;
+      let totalCollected = 0;
+      for (const p of room.players) {
+        if (p.id === actor.id) continue;
+        const count = p.resources[targetRes];
+        if (count > 0) {
+          p.resources[targetRes] = 0;
+          totalCollected += count;
+        }
+      }
+      actor.resources[targetRes] += totalCollected;
+      room.turnNotice = `💰 ${actor.name}님이 [${RESOURCE_META[targetRes].label}] 독점 카드를 발동하여 총 ${totalCollected}장을 회수했습니다!`;
+      return null;
+    }
+
+    return null;
+  };
+
+  const applyEndTurn = (room: NetCatanRoomData, playerId: string) => {
+    const actor = room.players[room.currentTurnIdx];
+    if (!actor || actor.id !== playerId) return;
+
+    // 이번 턴 구매한 발전 카드를 사용 가능 목록으로 이동
+    actor.devCards = [...(actor.devCards || []), ...(actor.newDevCards || [])];
+    actor.newDevCards = [];
+    actor.devCardPlayedThisTurn = false;
+
+    const nextIdx = (room.currentTurnIdx + 1) % room.players.length;
+    room.currentTurnIdx = nextIdx;
+    room.phase = 'ROLL_DICE';
+    room.freeRoadsRemaining = 0;
+    room.turnDeadline = Date.now() + room.baseTimeout * 1000;
+
+    const nextPlayer = room.players[nextIdx];
+    room.turnNotice = `👉 ${nextPlayer.name}님 차례입니다! 주사위를 굴려주세요.`;
+  };
+
+  // =========================================================================
+  // 방 나가기 & 브라우저 종료 감지
+  // =========================================================================
+  const leaveRoomById = useCallback(
+    async (roomIdToLeave: number) => {
+      const roomRef = ref(db, `catan_rooms/room_${roomIdToLeave}`);
+      try {
+        await runTransaction(roomRef, (roomData) => {
+          if (!roomData) return roomData;
+          const room = roomData as NetCatanRoomData;
+          const filteredPlayers = (room.players || []).filter((p) => p.id !== mySessionId);
+          const filteredWaitlist = (room.waitlist || []).filter((w) => w.id !== mySessionId);
+          const filteredSpectators = (room.spectators || []).filter((s) => s.id !== mySessionId);
+
+          if (filteredPlayers.length === 0 && filteredSpectators.length === 0) {
+            return createDefaultCatanRoom(room.roomId);
+          }
+
+          room.players = filteredPlayers.map((p, idx) => ({
+            ...p,
+            color: PLAYER_COLORS[idx % 4],
+          }));
+          room.waitlist = filteredWaitlist;
+          room.spectators = filteredSpectators;
+
+          if (filteredPlayers.length < 2 && room.status === 'PLAYING') {
+            room.status = 'WAITING';
+            room.turnNotice = '⚠️ 플레이어가 퇴장하여 대기 상태로 전환되었습니다.';
+          }
+          return room;
+        });
+      } catch (err) {
+        console.error('방 퇴장 오류:', err);
+      }
+    },
+    [mySessionId]
+  );
+
+  useEffect(() => {
+    if (appMode !== 'NET_ROOM' || !selectedRoomId) return;
+
+    const presenceRef = ref(db, `catan_presence/room_${selectedRoomId}/${mySessionId}`);
+    set(presenceRef, { online: true, joinedAt: Date.now() });
+    const disconnectHook = onDisconnect(presenceRef);
+    disconnectHook.remove();
+
+    const handleWindowClose = () => {
+      void leaveRoomById(selectedRoomId);
+    };
+
+    window.addEventListener('beforeunload', handleWindowClose);
+    window.addEventListener('pagehide', handleWindowClose);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleWindowClose);
+      window.removeEventListener('pagehide', handleWindowClose);
+      disconnectHook.cancel();
+    };
+  }, [appMode, selectedRoomId, mySessionId, leaveRoomById]);
+
+  // =========================================================================
+  // Firebase 실시간 넷게임 동기화
+  // =========================================================================
   useEffect(() => {
     if (appMode !== 'NET_LOBBY' && appMode !== 'NET_ROOM') return;
 
     const ensureRoomsExist = async () => {
       for (const id of [1, 2, 3, 4]) {
-        const roomRef = ref(db, `flip7_rooms/room_${id}`);
+        const roomRef = ref(db, `catan_rooms/room_${id}`);
         const snap = await get(roomRef);
         if (!snap.exists()) {
-          await set(roomRef, createDefaultFlip7Room(id));
+          await set(roomRef, createDefaultCatanRoom(id));
         }
       }
     };
     ensureRoomsExist();
 
-    const roomsRef = ref(db, 'flip7_rooms');
+    const roomsRef = ref(db, 'catan_rooms');
     const unsubscribe = onValue(roomsRef, (snapshot) => {
       const data = snapshot.val();
       if (!data) return;
 
-      const loadedRooms: NetFlip7RoomData[] = [1, 2, 3, 4].map((id) => {
+      const loadedRooms: NetCatanRoomData[] = [1, 2, 3, 4].map((id) => {
         const rData = data[`room_${id}`];
-        const def = createDefaultFlip7Room(id);
+        const def = createDefaultCatanRoom(id);
         if (!rData) return def;
+
         return {
           ...def,
           ...rData,
-          players: (rData.players || []).map((p: Flip7Player) => ({
+          players: (rData.players || []).map((p: CatanPlayer, idx: number) => ({
             ...p,
-            numberCards: p.numberCards || [],
-            modifierCards: p.modifierCards || [],
+            color: p.color || PLAYER_COLORS[idx % 4],
             chips: typeof p.chips === 'number' ? p.chips : INITIAL_CHIPS,
             wins: typeof p.wins === 'number' ? p.wins : 0,
-            totalPoints: typeof p.totalPoints === 'number' ? p.totalPoints : 0,
+            resources: { ...createEmptyHand(), ...(p.resources || {}) },
+            devCards: p.devCards || [],
+            newDevCards: p.newDevCards || [],
+            knightsPlayed: p.knightsPlayed || 0,
+            devCardPlayedThisTurn: Boolean(p.devCardPlayedThisTurn),
             isEliminated: Boolean(p.isEliminated),
           })),
-          pot: typeof rData.pot === 'number' ? rData.pot : 0,
+          buildings: rData.buildings || {},
+          roads: rData.roads || {},
+          devDeck: rData.devDeck || [],
           waitlist: rData.waitlist || [],
           spectators: rData.spectators || [],
-          deck: rData.deck || [],
-          discardPile: rData.discardPile || [],
-          winnersList: rData.winnersList || [],
-          pendingAction: rData.pendingAction || null,
         };
       });
       setRooms(loadedRooms);
@@ -912,6 +1384,7 @@ export default function Page4() {
       ? rooms.find((r) => r.roomId === selectedRoomId) || null
       : null;
 
+  // 넷게임 안내 음성 및 폭죽 동기화
   useEffect(() => {
     if (appMode !== 'NET_ROOM' || !activeNetRoom) return;
 
@@ -921,23 +1394,22 @@ export default function Page4() {
       lastSpokenNoticeRef.current !== activeNetRoom.winnerAnnouncement
     ) {
       lastSpokenNoticeRef.current = activeNetRoom.winnerAnnouncement;
-      if (activeNetRoom.winnersList && activeNetRoom.winnersList.length > 0) {
-        triggerFireworksCelebration(activeNetRoom.winnerAnnouncement);
-      } else {
-        speakKorean(activeNetRoom.winnerAnnouncement);
-      }
+      triggerFireworksCelebration(activeNetRoom.winnerAnnouncement);
       return;
     }
 
-    if (
-      activeNetRoom.turnNotice &&
-      lastSpokenNoticeRef.current !== activeNetRoom.turnNotice
-    ) {
+    if (activeNetRoom.turnNotice && lastSpokenNoticeRef.current !== activeNetRoom.turnNotice) {
       lastSpokenNoticeRef.current = activeNetRoom.turnNotice;
       speakKorean(activeNetRoom.turnNotice);
     }
-  }, [appMode, activeNetRoom?.turnNotice, activeNetRoom?.status, activeNetRoom?.winnerAnnouncement]);
+  }, [
+    appMode,
+    activeNetRoom?.turnNotice,
+    activeNetRoom?.status,
+    activeNetRoom?.winnerAnnouncement,
+  ]);
 
+  // 넷게임 타이머
   useEffect(() => {
     if (appMode !== 'NET_ROOM' || !activeNetRoom) {
       setRemainingSeconds(DEFAULT_TIMEOUT_SEC);
@@ -954,8 +1426,8 @@ export default function Page4() {
         setWaitingCountdownSec(leftSec);
 
         if (elapsedSec >= 425) {
-          const roomRef = ref(db, `flip7_rooms/room_${activeNetRoom.roomId}`);
-          await set(roomRef, createDefaultFlip7Room(activeNetRoom.roomId));
+          const roomRef = ref(db, `catan_rooms/room_${activeNetRoom.roomId}`);
+          await set(roomRef, createDefaultCatanRoom(activeNetRoom.roomId));
           showToast('⏳ 대기 시간이 7분을 초과하여 방이 초기화되었습니다.', 'info');
           setSelectedRoomId(null);
           setAppMode('NET_LOBBY');
@@ -963,26 +1435,24 @@ export default function Page4() {
         }
       }
 
-      if (
-        (activeNetRoom.status === 'PLAYING' || activeNetRoom.status === 'BETTING') &&
-        activeNetRoom.turnDeadline
-      ) {
+      if (activeNetRoom.status === 'PLAYING' && activeNetRoom.turnDeadline) {
         const diff = Math.max(0, Math.ceil((activeNetRoom.turnDeadline - now) / 1000));
         setRemainingSeconds(diff);
         handleCountdownCue(diff);
 
         if (diff === 0 && timeoutHandledRef.current !== activeNetRoom.turnDeadline) {
           timeoutHandledRef.current = activeNetRoom.turnDeadline;
-          handleNetTurnTimeout(activeNetRoom);
+          await handleNetTurnTimeout(activeNetRoom);
         }
       }
-    }, 300);
+    }, 350);
 
     return () => window.clearInterval(timer);
   }, [appMode, activeNetRoom]);
 
+  // 단독게임 타이머
   useEffect(() => {
-    if (appMode !== 'SOLO' || gameState !== 'PLAYING') {
+    if (appMode !== 'SOLO' || soloScreen !== 'PLAY' || soloRoom.status !== 'PLAYING') {
       return;
     }
 
@@ -991,37 +1461,87 @@ export default function Page4() {
         const next = Math.max(0, prev - 1);
         handleCountdownCue(next);
         if (next === 0) {
-          if (soloPendingAction) {
-            const target = players.find(
-              (p) => !p.isEliminated && !p.isBusted && !p.isStayed
-            );
-            if (target) handleSoloSelectActionTarget(target.id);
-          } else {
-            handleSoloStay();
-          }
+          setSoloRoom((prevRoom) => {
+            const copy: NetCatanRoomData = JSON.parse(JSON.stringify(prevRoom));
+            autoAdvanceTimeoutTurn(copy, 'SOLO');
+            return copy;
+          });
+          return soloTimeoutSec;
         }
         return next;
       });
     }, 1000);
 
     return () => window.clearInterval(timer);
-  }, [appMode, gameState, currentPlayerIdx, soloTimeoutSec, soloPendingAction]);
+  }, [appMode, soloScreen, soloRoom.status, soloTimeoutSec]);
 
+  /**
+   * 턴 제한시간 초과 시 자동 진행 처리
+   */
+  const autoAdvanceTimeoutTurn = (room: NetCatanRoomData, modeType: 'SOLO' | 'NET') => {
+    const actor = room.players[room.currentTurnIdx];
+    if (!actor) return;
+
+    if (room.phase === 'SETUP_1_SETTLEMENT' || room.phase === 'SETUP_2_SETTLEMENT') {
+      const validV = room.board.vertices.find((v) =>
+        canBuildSettlementAt(v.id, actor.id, room.board, room.buildings || {}, room.roads || {}, true)
+      );
+      if (validV) {
+        applySettlementPlacement(room, actor.id, validV.id, modeType);
+      }
+      return;
+    }
+
+    if (room.phase === 'SETUP_1_ROAD' || room.phase === 'SETUP_2_ROAD') {
+      const validE = room.board.edges.find((e) =>
+        canBuildRoadAt(
+          e.id,
+          actor.id,
+          room.board,
+          room.buildings || {},
+          room.roads || {},
+          room.lastPlacedVertexId
+        )
+      );
+      if (validE) {
+        applyRoadPlacement(room, actor.id, validE.id, modeType);
+      }
+      return;
+    }
+
+    if (room.phase === 'ROLL_DICE') {
+      applyDiceRoll(room, actor.id);
+    }
+
+    if (room.phase === 'ROBBER_MOVE') {
+      const validHex = room.board.hexes.find((h) => h.id !== room.robberHexId);
+      if (validHex) applyRobberMove(room, actor.id, validHex.id);
+    }
+
+    applyEndTurn(room, actor.id);
+    room.turnNotice = `⏰ 시간 초과로 ${actor.name}님의 턴이 자동 종료되었습니다! 👉 ${
+      room.players[room.currentTurnIdx].name
+    }님 차례!`;
+  };
+
+  // =========================================================================
+  // 넷게임 액션 핸들러
+  // =========================================================================
   const handleEnterRoomSubmit = async (asSpectator = false) => {
     if (!joinModalRoom) return;
-    const trimmedName = joinPlayerName ? joinPlayerName.trim() : '';
+    const trimmedName = joinPlayerName.trim();
     if (!trimmedName) {
       alert('참가할 이름을 입력해주세요!');
       return;
     }
 
-    const roomRef = ref(db, `flip7_rooms/room_${joinModalRoom.roomId}`);
+    const roomRef = ref(db, `catan_rooms/room_${joinModalRoom.roomId}`);
 
     try {
       let joinResultType = 'PLAYER';
 
       await runTransaction(roomRef, (roomData) => {
-        const room: NetFlip7RoomData = roomData || createDefaultFlip7Room(joinModalRoom.roomId);
+        const room: NetCatanRoomData = roomData || createDefaultCatanRoom(joinModalRoom.roomId);
         if (!room.players) room.players = [];
         if (!room.waitlist) room.waitlist = [];
         if (!room.spectators) room.spectators = [];
@@ -1042,25 +1562,18 @@ export default function Page4() {
         }
 
         if ((room.status === 'EMPTY' || room.status === 'WAITING') && room.players.length < 4) {
-          const idx = room.players.length;
-          const newPlayer: Flip7Player = {
+          const newPlayer: CatanPlayer = {
             id: mySessionId,
             name: trimmedName,
-            color: PIECE_COLORS[idx],
-            numberCards: [],
-            modifierCards: [],
-            hasSecondChance: false,
+            color: PLAYER_COLORS[room.players.length % 4],
             chips: INITIAL_CHIPS,
             wins: 0,
-            totalPoints: 0,
-            currentBet: 0,
-            hasPlacedBet: false,
-            isStayed: false,
-            isBusted: false,
-            isFlip7: false,
+            resources: createEmptyHand(),
+            devCards: [],
+            newDevCards: [],
+            knightsPlayed: 0,
+            devCardPlayedThisTurn: false,
             isEliminated: false,
-            roundScore: 0,
-            roundResult: 'NONE',
           };
 
           room.status = 'WAITING';
@@ -1081,893 +1594,1296 @@ export default function Page4() {
       setJoinPlayerName('');
       setAppMode('NET_ROOM');
 
-      if (joinResultType === 'SPECTATOR') {
-        showToast('👀 관망모드로 입장했습니다!', 'info');
-      } else if (joinResultType === 'WAITLIST') {
-        showToast('⏳ 다음 매치 예약자로 등록되었습니다!', 'info');
-      }
+      if (joinResultType === 'SPECTATOR') showToast('👀 관전 모드로 입장했습니다!', 'info');
+      else if (joinResultType === 'WAITLIST') showToast('⏳ 다음 판 예약자로 등록되었습니다!', 'info');
     } catch (err) {
       console.error(err);
       alert('방 입장 중 오류가 발생했습니다.');
     }
   };
 
-  const updateRoomSettings = async (newMinBet: number, newTimeout: number) => {
+  const updateNetRoomSettings = async (
+    newAnteBet: number,
+    newTimeout: number,
+    newTargetVP: number
+  ) => {
     if (!activeNetRoom) return;
-    const clampedTimeout = Math.min(180, Math.max(30, newTimeout));
-    const roomRef = ref(db, `flip7_rooms/room_${activeNetRoom.roomId}`);
+    const roomRef = ref(db, `catan_rooms/room_${activeNetRoom.roomId}`);
     await update(roomRef, {
-      minBet: newMinBet,
-      baseTimeout: clampedTimeout,
+      anteBet: newAnteBet,
+      baseTimeout: Math.min(180, Math.max(30, newTimeout)),
+      targetVP: newTargetVP,
       waitingSince: Date.now(),
     });
   };
 
-  const handleStartNetBettingPhase = async (isNextRound = false, isNewMatch = false) => {
+  const handleStartNetRound = async (isNextRound = false) => {
     if (!activeNetRoom) return;
-    const roomRef = ref(db, `flip7_rooms/room_${activeNetRoom.roomId}`);
+    const roomRef = ref(db, `catan_rooms/room_${activeNetRoom.roomId}`);
 
     await runTransaction(roomRef, (roomData) => {
       if (!roomData) return roomData;
-      const room = roomData as NetFlip7RoomData;
+      const room = roomData as NetCatanRoomData;
       if (!room.players) room.players = [];
       if (!room.waitlist) room.waitlist = [];
 
-      const nextRound = isNextRound && !isNewMatch ? (room.roundNumber || 1) + 1 : 1;
-      let basePlayers = [...room.players];
-      let remainingWaitlist = [...room.waitlist];
+      const isNewMatch = room.status === 'MATCH_OVER' || !isNextRound;
+      const nextRound = isNewMatch ? 1 : (room.roundNumber || 1) + 1;
+      const ante = room.anteBet || 1000;
 
-      if (!isNextRound || isNewMatch) {
-        const availableSlots = Math.max(0, 4 - basePlayers.length);
-        const joiningWaiters = remainingWaitlist.slice(0, availableSlots);
-        remainingWaitlist = remainingWaitlist.slice(availableSlots);
+      const basePlayers = isNewMatch
+        ? room.players.map((p) => ({
+            ...p,
+            chips: INITIAL_CHIPS,
+            wins: 0,
+            isEliminated: false,
+          }))
+        : room.players.map((p) => ({
+            ...p,
+            isEliminated: p.isEliminated || p.chips <= 0,
+          }));
 
-        const converted: Flip7Player[] = joiningWaiters.map((w) => ({
-          id: w.id,
-          name: w.name,
-          color: PIECE_COLORS[0],
-          numberCards: [],
-          modifierCards: [],
-          hasSecondChance: false,
-          chips: INITIAL_CHIPS,
-          wins: 0,
-          totalPoints: 0,
-          currentBet: 0,
-          hasPlacedBet: false,
-          isStayed: false,
-          isBusted: false,
-          isFlip7: false,
-          isEliminated: false,
-          roundScore: 0,
-          roundResult: 'NONE',
-        }));
-        basePlayers = [...basePlayers, ...converted];
+      const surviving = basePlayers.filter((p) => !p.isEliminated);
+      const nextActive = [...surviving];
+      const remainingWaitlist: WaitlistPlayer[] = [];
+
+      for (const w of room.waitlist) {
+        if (nextActive.length < 4) {
+          nextActive.push({
+            id: w.id,
+            name: w.name,
+            color: PLAYER_COLORS[nextActive.length % 4],
+            chips: INITIAL_CHIPS,
+            wins: 0,
+            resources: createEmptyHand(),
+            devCards: [],
+            newDevCards: [],
+            knightsPlayed: 0,
+            devCardPlayedThisTurn: false,
+            isEliminated: false,
+          });
+        } else {
+          remainingWaitlist.push(w);
+        }
       }
 
-      const activeSurvivors = basePlayers.filter((p) =>
-        isNewMatch ? true : !p.isEliminated && p.chips >= room.minBet
-      );
-
-      if (activeSurvivors.length < 2) {
-        room.status = basePlayers.length === 0 ? 'EMPTY' : 'WAITING';
-        room.players = basePlayers;
+      if (nextActive.length < 2) {
+        room.status = nextActive.length === 0 ? 'EMPTY' : 'WAITING';
+        room.players = nextActive;
         room.waitlist = remainingWaitlist;
         return room;
       }
 
-      const carryOverPot =
-        room.status === 'ROUND_OVER' && !isNewMatch && room.winnersList.length === 0
-          ? room.pot || 0
-          : 0;
+      const rotated =
+        isNextRound && !isNewMatch
+          ? [...nextActive.slice(1), nextActive[0]]
+          : nextActive;
 
-      const resetPlayers = basePlayers.map((p, idx) => {
-        const chipsToUse = isNewMatch || !isNextRound ? INITIAL_CHIPS : p.chips;
-        const eliminated = !isNewMatch && isNextRound && (p.isEliminated || chipsToUse < room.minBet);
+      const equalStake = Math.min(ante, ...rotated.map((p) => p.chips));
+      let totalPot = isNewMatch ? 0 : room.pot || 0;
+
+      const { board, desertHexId } = generateCatanBoard();
+
+      room.players = rotated.map((p, idx) => {
+        totalPot += equalStake;
         return {
           ...p,
-          color: PIECE_COLORS[idx % PIECE_COLORS.length],
-          numberCards: [],
-          modifierCards: [],
-          hasSecondChance: false,
-          chips: chipsToUse,
-          wins: isNewMatch || !isNextRound ? 0 : p.wins || 0,
-          totalPoints: isNewMatch || !isNextRound ? 0 : p.totalPoints || 0,
-          currentBet: 0,
-          hasPlacedBet: eliminated,
-          isStayed: eliminated,
-          isBusted: false,
-          isFlip7: false,
-          isEliminated: eliminated,
-          roundScore: 0,
-          roundResult: (eliminated ? 'OUT' : 'NONE') as FlipRoundResult,
+          color: PLAYER_COLORS[idx % 4],
+          chips: p.chips - equalStake,
+          resources: createEmptyHand(),
+          devCards: [],
+          newDevCards: [],
+          knightsPlayed: 0,
+          devCardPlayedThisTurn: false,
+          isEliminated: false,
         };
       });
 
-      const freshDeck = room.deck && room.deck.length > 25 ? room.deck : createFlip7Deck();
-
-      room.status = 'BETTING';
+      room.status = 'PLAYING';
       room.roundNumber = nextRound;
-      room.players = resetPlayers;
-      room.pot = carryOverPot;
+      room.pot = totalPot;
       room.waitlist = remainingWaitlist;
-      room.deck = freshDeck;
-      room.discardPile = room.discardPile || [];
-      room.currentPlayerIdx = 0;
-      room.pendingAction = null;
+      room.board = board;
+      room.robberHexId = desertHexId;
+      room.buildings = {};
+      room.roads = {};
+      room.devDeck = createShuffledDevDeck();
+      room.longestRoadOwnerId = null;
+      room.largestArmyOwnerId = null;
+      room.phase = 'SETUP_1_SETTLEMENT';
+      room.currentTurnIdx = 0;
+      room.setupStepIdx = 0;
+      room.lastPlacedVertexId = null;
+      room.freeRoadsRemaining = 0;
       room.turnDeadline = Date.now() + room.baseTimeout * 1000;
       room.winnerAnnouncement = '';
-      room.winnersList = [];
-      room.turnNotice = `💰 [${nextRound}라운드 · 판돈 베팅] ${pickRandomLine(
-        SITUATION_LINES.BET_START(nextRound)
-      )}`;
       room.waitingSince = null;
+      room.turnNotice = `🏝️ [제 ${nextRound}국 개척 시작] 동일 판돈 ${equalStake.toLocaleString()}칩 베팅! ${room.players[0].name}님 첫 번째 마을을 배치하세요.`;
 
       return room;
     });
 
-    setNetSelectedBet(activeNetRoom.minBet);
+    triggerChipAnimation('전원', activeNetRoom.anteBet, '#6d4c41');
   };
 
-  const handleNetPlaceBet = async (betAmount: number) => {
-    if (!activeNetRoom || activeNetRoom.status !== 'BETTING') return;
-    const me = activeNetRoom.players.find((p) => p.id === mySessionId);
-    if (!me || me.hasPlacedBet || me.isEliminated) return;
-
-    const actualBet = Math.min(me.chips, Math.max(activeNetRoom.minBet, betAmount));
-    triggerChipAnimation(me.name, actualBet, me.color);
-
-    const roomRef = ref(db, `flip7_rooms/room_${activeNetRoom.roomId}`);
+  const handleNetTurnTimeout = async (room: NetCatanRoomData) => {
+    const roomRef = ref(db, `catan_rooms/room_${room.roomId}`);
     await runTransaction(roomRef, (roomData) => {
       if (!roomData) return roomData;
-      const room = roomData as NetFlip7RoomData;
-      if (room.status !== 'BETTING') return room;
-
-      const pIdx = room.players.findIndex((p) => p.id === mySessionId);
-      if (pIdx === -1 || room.players[pIdx].hasPlacedBet || room.players[pIdx].isEliminated) {
-        return room;
-      }
-
-      const actor = room.players[pIdx];
-      const pay = Math.min(actor.chips, Math.max(room.minBet, betAmount));
-
-      room.players[pIdx] = {
-        ...actor,
-        chips: actor.chips - pay,
-        currentBet: pay,
-        hasPlacedBet: true,
-      };
-      room.pot = (room.pot || 0) + pay;
-
-      const allBetDone = room.players.every((p) => p.isEliminated || p.hasPlacedBet);
-      if (!allBetDone) {
-        room.turnNotice = `🪙 ${pickRandomLine(SITUATION_LINES.BET_PLACED(actor.name, pay))}`;
-        return room;
-      }
-
-      let dCopy = [...(room.deck || createFlip7Deck())];
-      const discCopy = [...(room.discardPile || [])];
-
-      room.players = room.players.map((p) => {
-        if (p.isEliminated) return p;
-        let drawnIdx = dCopy.findIndex((c) => c.kind === 'NUMBER');
-        if (drawnIdx === -1) {
-          dCopy = createFlip7Deck();
-          drawnIdx = dCopy.findIndex((c) => c.kind === 'NUMBER');
-        }
-        const [initCard] = dCopy.splice(drawnIdx, 1);
-        const updatedP: Flip7Player = {
-          ...p,
-          numberCards: [initCard],
-          modifierCards: [],
-          hasSecondChance: false,
-          isStayed: false,
-          isBusted: false,
-          isFlip7: false,
-        };
-        updatedP.roundScore = calculateFlip7RoundScore(updatedP);
-        return updatedP;
-      });
-
-      room.deck = dCopy;
-      room.discardPile = discCopy;
-
-      const firstActiveIdx = room.players.findIndex(
-        (p) => !p.isEliminated && !p.isStayed && !p.isBusted
-      );
-      const activeP = room.players[firstActiveIdx];
-      room.status = 'PLAYING';
-      room.currentPlayerIdx = firstActiveIdx;
-      room.turnDeadline = Date.now() + room.baseTimeout * 1000;
-      room.turnNotice = `🎯 ${pickRandomLine(SITUATION_LINES.PLAYER_TURN(activeP.name))}`;
-      return room;
+      const r = roomData as NetCatanRoomData;
+      if (r.status !== 'PLAYING') return r;
+      autoAdvanceTimeoutTurn(r, 'NET');
+      return r;
     });
   };
 
-  const finalizeOrAdvanceNetTurn = (
-    room: NetFlip7RoomData,
-    updatedPlayers: Flip7Player[],
-    nextDeck: Flip7Card[],
-    nextDiscard: Flip7Card[],
-    fromIdx: number,
-    actionNotice: string,
-    immediateRoundEnd: boolean,
-    pendingAction: PendingActionState | null
+  const runNetAction = async (
+    mutator: (room: NetCatanRoomData) => string | null,
+    soundKind?: 'dice' | 'build' | 'robber'
   ) => {
-    room.players = updatedPlayers;
-    room.deck = nextDeck;
-    room.discardPile = nextDiscard;
-    room.pendingAction = pendingAction;
+    if (!activeNetRoom) return;
+    const roomRef = ref(db, `catan_rooms/room_${activeNetRoom.roomId}`);
+    let errorMsg: string | null = null;
 
-    if (pendingAction) {
-      room.turnDeadline = Date.now() + room.baseTimeout * 1000;
-      room.turnNotice = actionNotice;
-      return;
-    }
-
-    const anyAlive = updatedPlayers.some(
-      (p) => !p.isEliminated && !p.isStayed && !p.isBusted
-    );
-
-    if (immediateRoundEnd || !anyAlive) {
-      const settled = settleFlip7Round(
-        updatedPlayers,
-        room.pot || 0,
-        room.minBet,
-        true
-      );
-      room.players = settled.settledPlayers;
-      room.pot = settled.carryOverPot;
-      room.status = settled.isMatchOver ? 'MATCH_OVER' : 'ROUND_OVER';
-      room.turnDeadline = null;
-      room.turnNotice = '';
-      room.winnersList = settled.winners;
-      room.winnerAnnouncement = settled.announcement;
-
-      settled.settledPlayers.forEach((sp) => {
-        if (sp.roundResult === 'WIN' || sp.roundResult === 'FLIP7_WIN') {
-          saveHallOfFameRecord('NET', {
-            name: sp.name,
-            scoreOrLevel: `${sp.wins}승 · 보유 ${sp.chips.toLocaleString()}칩`,
-          });
-        }
-      });
-      return;
-    }
-
-    let nextIdx = -1;
-    for (let offset = 1; offset <= updatedPlayers.length; offset++) {
-      const candidate = (fromIdx + offset) % updatedPlayers.length;
-      const p = updatedPlayers[candidate];
-      if (!p.isEliminated && !p.isStayed && !p.isBusted) {
-        nextIdx = candidate;
-        break;
-      }
-    }
-
-    const nextActor = updatedPlayers[nextIdx];
-    room.currentPlayerIdx = nextIdx;
-    room.turnDeadline = Date.now() + room.baseTimeout * 1000;
-    room.turnNotice = `${actionNotice} 👉 다음은 ${nextActor.name}님 차례입니다!`;
-  };
-
-  const handleNetPlayAction = async (action: 'HIT' | 'STAY') => {
-    if (!activeNetRoom || activeNetRoom.status !== 'PLAYING' || activeNetRoom.pendingAction) return;
-    const currIdx = activeNetRoom.currentPlayerIdx % activeNetRoom.players.length;
-    const currP = activeNetRoom.players[currIdx];
-    if (!currP || currP.id !== mySessionId) return;
-
-    const roomRef = ref(db, `flip7_rooms/room_${activeNetRoom.roomId}`);
     await runTransaction(roomRef, (roomData) => {
       if (!roomData) return roomData;
-      const room = roomData as NetFlip7RoomData;
-      if (room.status !== 'PLAYING' || room.pendingAction) return room;
-
-      const idx = room.currentPlayerIdx % room.players.length;
-      const actor = room.players[idx];
-      if (!actor || actor.id !== mySessionId) return room;
-
-      if (action === 'STAY') {
-        const updated = room.players.map((p, i) => {
-          if (i !== idx) return p;
-          const rScore = calculateFlip7RoundScore(p);
-          return { ...p, isStayed: true, roundScore: rScore };
-        });
-        const confirmedScore = updated[idx].roundScore;
-        finalizeOrAdvanceNetTurn(
-          room,
-          updated,
-          room.deck || [],
-          room.discardPile || [],
-          idx,
-          `✋ ${pickRandomLine(SITUATION_LINES.STAY(actor.name, confirmedScore))}`,
-          false,
-          null
-        );
-        return room;
-      }
-
-      const res = applyDrawnCardToPlayer(
-        room.players,
-        idx,
-        room.deck || [],
-        room.discardPile || [],
-        idx
-      );
-      playSound(res.soundToPlay);
-
-      finalizeOrAdvanceNetTurn(
-        room,
-        res.updatedPlayers,
-        res.nextDeck,
-        res.nextDiscard,
-        idx,
-        res.notice,
-        res.immediateRoundEnd,
-        res.pendingAction
-      );
+      const room = roomData as NetCatanRoomData;
+      if (!room.buildings) room.buildings = {};
+      if (!room.roads) room.roads = {};
+      errorMsg = mutator(room);
       return room;
     });
-  };
 
-  const handleNetSelectActionTarget = async (targetPlayerId: string) => {
-    if (!activeNetRoom || activeNetRoom.status !== 'PLAYING' || !activeNetRoom.pendingAction) return;
-    if (activeNetRoom.pendingAction.actorId !== mySessionId) return;
-
-    const roomRef = ref(db, `flip7_rooms/room_${activeNetRoom.roomId}`);
-    await runTransaction(roomRef, (roomData) => {
-      if (!roomData) return roomData;
-      const room = roomData as NetFlip7RoomData;
-      if (room.status !== 'PLAYING' || !room.pendingAction) return room;
-      if (room.pendingAction.actorId !== mySessionId) return room;
-
-      const targetIdx = room.players.findIndex((p) => p.id === targetPlayerId);
-      if (targetIdx === -1) return room;
-      const actorIdx = room.currentPlayerIdx % room.players.length;
-
-      if (room.pendingAction.actionType === 'FREEZE') {
-        const updated = room.players.map((p, i) => {
-          if (i !== targetIdx) return p;
-          const rScore = calculateFlip7RoundScore(p);
-          return { ...p, isStayed: true, roundScore: rScore };
-        });
-        playSound('action');
-        finalizeOrAdvanceNetTurn(
-          room,
-          updated,
-          room.deck || [],
-          room.discardPile || [],
-          actorIdx,
-          `❄️ [FREEZE] ${room.pendingAction.actorName}님이 ${updated[targetIdx].name}님을 얼려 스탠드시켰습니다!`,
-          false,
-          null
-        );
-        return room;
-      }
-
-      const res = executeFlipThreeOnTarget(
-        room.players,
-        targetIdx,
-        room.deck || [],
-        room.discardPile || []
-      );
-      playSound(res.soundToPlay);
-      finalizeOrAdvanceNetTurn(
-        room,
-        res.updatedPlayers,
-        res.nextDeck,
-        res.nextDiscard,
-        actorIdx,
-        res.notice,
-        res.immediateRoundEnd,
-        null
-      );
-      return room;
-    });
-  };
-
-  const handleNetTurnTimeout = async (room: NetFlip7RoomData) => {
-    const roomRef = ref(db, `flip7_rooms/room_${room.roomId}`);
-
-    if (room.status === 'BETTING') {
-      await runTransaction(roomRef, (roomData) => {
-        if (!roomData) return roomData;
-        const r = roomData as NetFlip7RoomData;
-        if (r.status !== 'BETTING') return r;
-
-        let addedPot = 0;
-        r.players = r.players.map((p) => {
-          if (p.isEliminated || p.hasPlacedBet) return p;
-          const autoPay = Math.min(p.chips, r.minBet);
-          addedPot += autoPay;
-          return { ...p, chips: p.chips - autoPay, currentBet: autoPay, hasPlacedBet: true };
-        });
-        r.pot = (r.pot || 0) + addedPot;
-
-        let dCopy = [...(r.deck || createFlip7Deck())];
-        r.players = r.players.map((p) => {
-          if (p.isEliminated) return p;
-          let drawnIdx = dCopy.findIndex((c) => c.kind === 'NUMBER');
-          if (drawnIdx === -1) {
-            dCopy = createFlip7Deck();
-            drawnIdx = dCopy.findIndex((c) => c.kind === 'NUMBER');
-          }
-          const [initCard] = dCopy.splice(drawnIdx, 1);
-          const up: Flip7Player = {
-            ...p,
-            numberCards: [initCard],
-            modifierCards: [],
-            hasSecondChance: false,
-            isStayed: false,
-            isBusted: false,
-            isFlip7: false,
-          };
-          up.roundScore = calculateFlip7RoundScore(up);
-          return up;
-        });
-        r.deck = dCopy;
-
-        const firstIdx = r.players.findIndex((p) => !p.isEliminated && !p.isStayed && !p.isBusted);
-        const nextP = r.players[firstIdx];
-        r.status = 'PLAYING';
-        r.currentPlayerIdx = firstIdx;
-        r.turnDeadline = Date.now() + r.baseTimeout * 1000;
-        r.turnNotice = `⏰ 시간 초과로 기본 베팅이 완료되었습니다. ${nextP.name}님 차례입니다.`;
-        return r;
-      });
-      return;
-    }
-
-    if (room.status === 'PLAYING') {
-      await runTransaction(roomRef, (roomData) => {
-        if (!roomData) return roomData;
-        const r = roomData as NetFlip7RoomData;
-        if (r.status !== 'PLAYING') return r;
-
-        const idx = r.currentPlayerIdx % r.players.length;
-        const updated = r.players.map((p, i) =>
-          i === idx ? { ...p, isStayed: true, roundScore: calculateFlip7RoundScore(p) } : p
-        );
-        finalizeOrAdvanceNetTurn(
-          r,
-          updated,
-          r.deck || [],
-          r.discardPile || [],
-          idx,
-          `⏰ 시간 초과로 ${updated[idx].name}님이 자동 스탠드 처리되었습니다.`,
-          false,
-          null
-        );
-        return r;
-      });
+    if (errorMsg) {
+      showToast(errorMsg, 'danger');
+    } else if (soundKind) {
+      playSound(soundKind);
     }
   };
 
   const handleLeaveNetRoom = async () => {
-    if (!activeNetRoom) {
-      setAppMode('NET_LOBBY');
-      return;
+    if (selectedRoomId) {
+      await leaveRoomById(selectedRoomId);
     }
-
-    const roomRef = ref(db, `flip7_rooms/room_${activeNetRoom.roomId}`);
-    await runTransaction(roomRef, (roomData) => {
-      if (!roomData) return roomData;
-      const room = roomData as NetFlip7RoomData;
-      const filteredPlayers = (room.players || []).filter((p) => p.id !== mySessionId);
-      const filteredWaitlist = (room.waitlist || []).filter((w) => w.id !== mySessionId);
-      const filteredSpectators = (room.spectators || []).filter((s) => s.id !== mySessionId);
-
-      if (filteredPlayers.length === 0 && filteredSpectators.length === 0) {
-        return createDefaultFlip7Room(room.roomId);
-      }
-      room.players = filteredPlayers;
-      room.waitlist = filteredWaitlist;
-      room.spectators = filteredSpectators;
-      return room;
-    });
-
     setSelectedRoomId(null);
     setAppMode('NET_LOBBY');
   };
 
-  const addPlayer = () => {
-    const trimmed = inputName ? inputName.trim() : '';
-    if (!trimmed) return;
-    if (players.length >= 4) {
-      showToast('최대 4명까지 참가할 수 있습니다.', 'info');
-      return;
-    }
-    const idx = players.length;
-    setPlayers([
-      ...players,
-      {
-        id: String(Date.now() + Math.random()),
-        name: trimmed,
-        color: PIECE_COLORS[idx % PIECE_COLORS.length],
-        numberCards: [],
-        modifierCards: [],
-        hasSecondChance: false,
-        chips: INITIAL_CHIPS,
-        wins: 0,
-        totalPoints: 0,
-        currentBet: 0,
-        hasPlacedBet: true,
-        isStayed: false,
-        isBusted: false,
-        isFlip7: false,
-        isEliminated: false,
-        roundScore: 0,
-        roundResult: 'NONE',
-      },
-    ]);
-    setInputName('');
-  };
+  // =========================================================================
+  // 단독게임(SOLO) 시작 및 액션 실행
+  // =========================================================================
+  const startSoloMatch = (isNextRound = false) => {
+    const isFresh = !isNextRound || soloRoom.status === 'MATCH_OVER';
+    const nextRound = isFresh ? 1 : soloRoom.roundNumber + 1;
+    const { board, desertHexId } = generateCatanBoard();
 
-  const removePlayer = (id: string) => {
-    setPlayers(players.filter((p) => p.id !== id));
-  };
+    const basePlayers: CatanPlayer[] = isFresh
+      ? Array.from({ length: soloPlayerCount }, (_, idx) => ({
+          id: `solo_${idx + 1}`,
+          name: soloNames[idx]?.trim() || `개척자 ${idx + 1}`,
+          color: PLAYER_COLORS[idx % 4],
+          chips: INITIAL_CHIPS,
+          wins: 0,
+          resources: createEmptyHand(),
+          devCards: [],
+          newDevCards: [],
+          knightsPlayed: 0,
+          devCardPlayedThisTurn: false,
+          isEliminated: false,
+        }))
+      : [...soloRoom.players.slice(1), soloRoom.players[0]];
 
-  const movePlayerOrder = (index: number, direction: 'UP' | 'DOWN') => {
-    const newPlayers = [...players];
-    const targetIdx = direction === 'UP' ? index - 1 : index + 1;
-    if (targetIdx < 0 || targetIdx >= newPlayers.length) return;
-    [newPlayers[index], newPlayers[targetIdx]] = [newPlayers[targetIdx], newPlayers[index]];
-    setPlayers(newPlayers);
-  };
+    const equalStake = Math.min(soloAnteBet, ...basePlayers.map((p) => p.chips));
+    let totalPot = isFresh ? 0 : soloRoom.pot;
 
-  const shufflePlayersOrder = () => {
-    setPlayers([...players].sort(() => Math.random() - 0.5));
-  };
-
-  const goToMainReady = () => {
-    if (players.length < 2) {
-      showToast('최소 2명 이상의 플레이어를 등록해주세요!', 'info');
-      return;
-    }
-    setGameState('READY');
-  };
-
-  const startSoloRound = (isNextRound = false) => {
-    const nextRound = isNextRound ? soloRoundNum + 1 : 1;
-    let dCopy = deck.length > 25 ? [...deck] : createFlip7Deck();
-
-    const initialized = players.map((p, idx) => {
-      let drawnIdx = dCopy.findIndex((c) => c.kind === 'NUMBER');
-      if (drawnIdx === -1) {
-        dCopy = createFlip7Deck();
-        drawnIdx = dCopy.findIndex((c) => c.kind === 'NUMBER');
-      }
-      const [initCard] = dCopy.splice(drawnIdx, 1);
-      const up: Flip7Player = {
+    const preparedPlayers = basePlayers.map((p, idx) => {
+      totalPot += equalStake;
+      return {
         ...p,
-        color: PIECE_COLORS[idx % PIECE_COLORS.length],
-        numberCards: [initCard],
-        modifierCards: [],
-        hasSecondChance: false,
-        wins: isNextRound ? p.wins : 0,
-        totalPoints: isNextRound ? p.totalPoints : 0,
-        isStayed: false,
-        isBusted: false,
-        isFlip7: false,
+        color: PLAYER_COLORS[idx % 4],
+        chips: p.chips - equalStake,
+        resources: createEmptyHand(),
+        devCards: [],
+        newDevCards: [],
+        knightsPlayed: 0,
+        devCardPlayedThisTurn: false,
         isEliminated: false,
-        roundScore: 0,
-        roundResult: 'NONE',
       };
-      up.roundScore = calculateFlip7RoundScore(up);
-      return up;
     });
 
-    const notice = `🎯 [${nextRound}라운드] ${pickRandomLine(
-      SITUATION_LINES.PLAYER_TURN(initialized[0].name)
-    )}`;
-    setSoloRoundNum(nextRound);
-    setDeck(dCopy);
-    setDiscardPile([]);
-    setPlayers(initialized);
-    setCurrentPlayerIdx(0);
-    setSoloPendingAction(null);
+    const notice = `🏝️ [제 ${nextRound}국 개척 시작] 동일 판돈 ${equalStake.toLocaleString()}칩 베팅! ${preparedPlayers[0].name}님 첫 번째 마을을 배치하세요.`;
+
+    setSoloRoom({
+      roomId: 0,
+      status: 'PLAYING',
+      players: preparedPlayers,
+      pot: totalPot,
+      waitlist: [],
+      spectators: [],
+      baseTimeout: soloTimeoutSec,
+      anteBet: soloAnteBet,
+      targetVP: soloTargetVP,
+      roundNumber: nextRound,
+      phase: 'SETUP_1_SETTLEMENT',
+      currentTurnIdx: 0,
+      setupStepIdx: 0,
+      lastPlacedVertexId: null,
+      freeRoadsRemaining: 0,
+      dice: [3, 4],
+      robberHexId: desertHexId,
+      longestRoadOwnerId: null,
+      largestArmyOwnerId: null,
+      board,
+      buildings: {},
+      roads: {},
+      devDeck: createShuffledDevDeck(),
+      turnDeadline: Date.now() + soloTimeoutSec * 1000,
+      turnNotice: notice,
+      winnerAnnouncement: '',
+      waitingSince: null,
+    });
+
     setSoloRemainingSec(soloTimeoutSec);
-    lastCountdownSpokenRef.current = null;
-    setWinnerAnnouncement('');
+    setBuildMode('NONE');
     setShowFireworks(false);
-    setTurnNotice(notice);
+    triggerChipAnimation('전원', equalStake, '#6d4c41');
     speakKorean(notice);
-    setGameState('PLAYING');
+    setSoloScreen('PLAY');
   };
 
-  const finalizeOrAdvanceSoloTurn = (
-    updatedPlayers: Flip7Player[],
-    nextDeck: Flip7Card[],
-    nextDiscard: Flip7Card[],
-    fromIdx: number,
-    actionNotice: string,
-    immediateRoundEnd: boolean,
-    pendingAction: PendingActionState | null
+  const runSoloAction = (
+    mutator: (room: NetCatanRoomData) => string | null,
+    soundKind?: 'dice' | 'build' | 'robber'
   ) => {
-    setPlayers(updatedPlayers);
-    setDeck(nextDeck);
-    setDiscardPile(nextDiscard);
-    setSoloPendingAction(pendingAction);
-
-    if (pendingAction) {
-      setSoloRemainingSec(soloTimeoutSec);
-      lastCountdownSpokenRef.current = null;
-      setTurnNotice(actionNotice);
-      speakKorean(actionNotice);
+    const copy: NetCatanRoomData = JSON.parse(JSON.stringify(soloRoom));
+    const err = mutator(copy);
+    if (err) {
+      showToast(err, 'danger');
       return;
     }
+    if (soundKind) playSound(soundKind);
 
-    const anyAlive = updatedPlayers.some((p) => !p.isStayed && !p.isBusted);
-    if (immediateRoundEnd || !anyAlive) {
-      const settled = settleFlip7Round(updatedPlayers, 0, 0, false);
-      setPlayers(settled.settledPlayers);
-      setTurnNotice('');
-      setWinnerAnnouncement(settled.announcement);
-      setGameState('ROUND_OVER');
+    if (copy.status === 'ROUND_OVER' || copy.status === 'MATCH_OVER') {
+      triggerFireworksCelebration(copy.winnerAnnouncement);
+    } else if (copy.turnNotice !== soloRoom.turnNotice) {
+      speakKorean(copy.turnNotice);
+    }
 
-      if (settled.winners.length > 0) {
-        triggerFireworksCelebration(settled.announcement);
-        settled.settledPlayers.forEach((sp) => {
-          if (sp.roundResult === 'WIN' || sp.roundResult === 'FLIP7_WIN') {
-            saveHallOfFameRecord('SOLO', {
-              name: sp.name,
-              scoreOrLevel: `${sp.wins}승 · 누적 ${sp.totalPoints}점`,
-            });
-          }
-        });
+    setSoloRoom(copy);
+  };
+
+  // =========================================================================
+  // 공용 보드 인터랙션 핸들러 (단독 / 넷게임 통합)
+  // =========================================================================
+  const handleBoardHexClick = (hexId: number, room: NetCatanRoomData, isSolo: boolean) => {
+    const actor = room.players[room.currentTurnIdx];
+    if (!actor) return;
+    if (!isSolo && actor.id !== mySessionId) return;
+
+    if (room.phase === 'ROBBER_MOVE') {
+      if (hexId === room.robberHexId) {
+        showToast('현재 도둑이 있는 곳과 다른 타일을 선택하세요!', 'danger');
+        return;
+      }
+      if (isSolo) {
+        runSoloAction((r) => {
+          applyRobberMove(r, actor.id, hexId);
+          return null;
+        }, 'robber');
       } else {
-        speakKorean(settled.announcement);
+        void runNetAction((r) => {
+          applyRobberMove(r, mySessionId, hexId);
+          return null;
+        }, 'robber');
       }
+    }
+  };
+
+  const handleBoardVertexClick = (vertexId: number, room: NetCatanRoomData, isSolo: boolean) => {
+    const actor = room.players[room.currentTurnIdx];
+    if (!actor) return;
+    if (!isSolo && actor.id !== mySessionId) return;
+
+    const isSetupSettlement =
+      room.phase === 'SETUP_1_SETTLEMENT' || room.phase === 'SETUP_2_SETTLEMENT';
+
+    if (isSetupSettlement || (room.phase === 'MAIN_TURN' && buildMode === 'SETTLEMENT')) {
+      if (isSolo) {
+        runSoloAction((r) => applySettlementPlacement(r, actor.id, vertexId, 'SOLO'), 'build');
+      } else {
+        void runNetAction((r) => applySettlementPlacement(r, mySessionId, vertexId, 'NET'), 'build');
+      }
+      setBuildMode('NONE');
       return;
     }
 
-    let nextIdx = -1;
-    for (let offset = 1; offset <= updatedPlayers.length; offset++) {
-      const candidate = (fromIdx + offset) % updatedPlayers.length;
-      if (!updatedPlayers[candidate].isStayed && !updatedPlayers[candidate].isBusted) {
-        nextIdx = candidate;
-        break;
+    if (room.phase === 'MAIN_TURN' && buildMode === 'CITY') {
+      if (isSolo) {
+        runSoloAction((r) => applyCityUpgrade(r, actor.id, vertexId, 'SOLO'), 'build');
+      } else {
+        void runNetAction((r) => applyCityUpgrade(r, mySessionId, vertexId, 'NET'), 'build');
       }
+      setBuildMode('NONE');
     }
-
-    const nextActor = updatedPlayers[nextIdx];
-    const fullNotice = `${actionNotice} 👉 다음은 ${nextActor.name}님 차례입니다!`;
-    setCurrentPlayerIdx(nextIdx);
-    setSoloRemainingSec(soloTimeoutSec);
-    lastCountdownSpokenRef.current = null;
-    setTurnNotice(fullNotice);
-    speakKorean(fullNotice);
   };
 
-  const handleSoloHit = () => {
-    if (gameState !== 'PLAYING' || soloPendingAction) return;
-    const res = applyDrawnCardToPlayer(
-      players,
-      currentPlayerIdx,
-      deck,
-      discardPile,
-      currentPlayerIdx
-    );
-    playSound(res.soundToPlay);
-    finalizeOrAdvanceSoloTurn(
-      res.updatedPlayers,
-      res.nextDeck,
-      res.nextDiscard,
-      currentPlayerIdx,
-      res.notice,
-      res.immediateRoundEnd,
-      res.pendingAction
-    );
+  const handleBoardEdgeClick = (edgeId: number, room: NetCatanRoomData, isSolo: boolean) => {
+    const actor = room.players[room.currentTurnIdx];
+    if (!actor) return;
+    if (!isSolo && actor.id !== mySessionId) return;
+
+    const isSetupRoad = room.phase === 'SETUP_1_ROAD' || room.phase === 'SETUP_2_ROAD';
+    const isCardRoad = room.phase === 'ROAD_BUILDING_CARD';
+
+    if (isSetupRoad || isCardRoad || (room.phase === 'MAIN_TURN' && buildMode === 'ROAD')) {
+      if (isSolo) {
+        runSoloAction((r) => applyRoadPlacement(r, actor.id, edgeId, 'SOLO'), 'build');
+      } else {
+        void runNetAction((r) => applyRoadPlacement(r, mySessionId, edgeId, 'NET'), 'build');
+      }
+      if (!isCardRoad) setBuildMode('NONE');
+    }
   };
 
-  const handleSoloStay = () => {
-    if (gameState !== 'PLAYING' || soloPendingAction) return;
-    const actor = players[currentPlayerIdx];
-    const updated = players.map((p, i) => {
-      if (i !== currentPlayerIdx) return p;
-      const rScore = calculateFlip7RoundScore(p);
-      return { ...p, isStayed: true, roundScore: rScore };
-    });
-    const confirmedScore = updated[currentPlayerIdx].roundScore;
-    finalizeOrAdvanceSoloTurn(
-      updated,
-      deck,
-      discardPile,
-      currentPlayerIdx,
-      `✋ ${pickRandomLine(SITUATION_LINES.STAY(actor.name, confirmedScore))}`,
-      false,
-      null
-    );
-  };
-
-  const handleSoloSelectActionTarget = (targetPlayerId: string) => {
-    if (gameState !== 'PLAYING' || !soloPendingAction) return;
-    const targetIdx = players.findIndex((p) => p.id === targetPlayerId);
-    if (targetIdx === -1) return;
-
-    if (soloPendingAction.actionType === 'FREEZE') {
-      const updated = players.map((p, i) => {
-        if (i !== targetIdx) return p;
-        return { ...p, isStayed: true, roundScore: calculateFlip7RoundScore(p) };
-      });
-      playSound('action');
-      finalizeOrAdvanceSoloTurn(
-        updated,
-        deck,
-        discardPile,
-        currentPlayerIdx,
-        `❄️ [FREEZE] ${soloPendingAction.actorName}님이 ${updated[targetIdx].name}님을 얼려 스탠드시켰습니다!`,
-        false,
-        null
-      );
+  const handleExecuteTrade = (room: NetCatanRoomData, isSolo: boolean) => {
+    const actor = room.players[room.currentTurnIdx];
+    if (!actor || room.phase !== 'MAIN_TURN') return;
+    if (tradeGiveRes === tradeGetRes) {
+      showToast('서로 다른 자원을 선택해주세요!', 'danger');
       return;
     }
 
-    const res = executeFlipThreeOnTarget(players, targetIdx, deck, discardPile);
-    playSound(res.soundToPlay);
-    finalizeOrAdvanceSoloTurn(
-      res.updatedPlayers,
-      res.nextDeck,
-      res.nextDiscard,
-      currentPlayerIdx,
-      res.notice,
-      res.immediateRoundEnd,
-      null
-    );
+    const doTrade = (r: NetCatanRoomData): string | null => {
+      const me = r.players[r.currentTurnIdx];
+      if (!me) return '차례 오류';
+
+      if (tradeTargetPlayerId === 'BANK') {
+        if (me.resources[tradeGiveRes] < 4) {
+          return `해상 무역은 같은 자원 4장이 필요합니다! (${RESOURCE_META[tradeGiveRes].label} 부족)`;
+        }
+        me.resources[tradeGiveRes] -= 4;
+        me.resources[tradeGetRes] += 1;
+        r.turnNotice = `⛵ ${me.name}님이 해상 무역(4:1)으로 ${RESOURCE_META[tradeGiveRes].label} 4장을 내고 ${RESOURCE_META[tradeGetRes].label} 1장을 얻었습니다!`;
+        return null;
+      }
+
+      const partner = r.players.find((p) => p.id === tradeTargetPlayerId);
+      if (!partner) return '거래 상대를 찾을 수 없습니다.';
+      if (me.resources[tradeGiveRes] < 1) {
+        return `제공할 ${RESOURCE_META[tradeGiveRes].label} 자원이 부족합니다.`;
+      }
+      if (partner.resources[tradeGetRes] < 1) {
+        return `${partner.name}님에게 ${RESOURCE_META[tradeGetRes].label} 자원이 없습니다.`;
+      }
+
+      me.resources[tradeGiveRes] -= 1;
+      me.resources[tradeGetRes] += 1;
+      partner.resources[tradeGetRes] -= 1;
+      partner.resources[tradeGiveRes] += 1;
+      r.turnNotice = `🤝 ${me.name}님과 ${partner.name}님이 ${RESOURCE_META[tradeGiveRes].label} ↔ ${RESOURCE_META[tradeGetRes].label} 1:1 교환을 완료했습니다!`;
+      return null;
+    };
+
+    if (isSolo) runSoloAction(doTrade, 'build');
+    else void runNetAction(doTrade, 'build');
+    setTradeModalOpen(false);
   };
 
   // =========================================================================
-  // 실제 Flip 7 보드게임 카드 & 포커 칩 UI 렌더러
+  // SVG 육각 카탄 섬 보드 렌더링
   // =========================================================================
-  const renderFlipCard = (card: Flip7Card, isDuplicateBust = false) => {
-    const isModifier = card.kind === 'MODIFIER';
-    const numVal = card.numberValue ?? 0;
+  const renderCatanSvgBoard = (
+    room: NetCatanRoomData,
+    canInteract: boolean,
+    isSolo: boolean
+  ) => {
+    const actor = room.players[room.currentTurnIdx];
+    const actorId = actor?.id ?? '';
 
-    let tierClass = 'card-zero';
-    if (isModifier) {
-      tierClass = 'card-modifier';
-    } else if (numVal === 0) {
-      tierClass = 'card-zero';
-    } else if (numVal <= 3) {
-      tierClass = 'card-cyan';
-    } else if (numVal <= 6) {
-      tierClass = 'card-emerald';
-    } else if (numVal <= 9) {
-      tierClass = 'card-amber';
-    } else {
-      tierClass = 'card-crimson';
-    }
+    const showSettlementSpots =
+      canInteract &&
+      (room.phase === 'SETUP_1_SETTLEMENT' ||
+        room.phase === 'SETUP_2_SETTLEMENT' ||
+        (room.phase === 'MAIN_TURN' && buildMode === 'SETTLEMENT'));
 
-    // 실제 Flip 7 카드 하단에는 덱 내 해당 숫자 카드 총 개수(0은 1장, 1~12는 숫자만큼)가 점으로 표시됨
-    const deckCopiesCount = isModifier ? 0 : numVal === 0 ? 1 : numVal;
+    const showCitySpots =
+      canInteract && room.phase === 'MAIN_TURN' && buildMode === 'CITY';
+
+    const showRoadSpots =
+      canInteract &&
+      (room.phase === 'SETUP_1_ROAD' ||
+        room.phase === 'SETUP_2_ROAD' ||
+        room.phase === 'ROAD_BUILDING_CARD' ||
+        (room.phase === 'MAIN_TURN' && buildMode === 'ROAD'));
+
+    const showRobberTargets = canInteract && room.phase === 'ROBBER_MOVE';
 
     return (
-      <div
-        key={card.id}
-        className={`f7-card ${tierClass} ${isDuplicateBust ? 'card-bust-shake' : ''}`}
-      >
-        <div className="f7-card-inner-frame">
-          <span className="f7-card-corner top-left">{card.label}</span>
-          <div className="f7-card-center-art">
-            <span className="f7-card-main">{card.label}</span>
-            <span className="f7-card-sub">{card.subLabel}</span>
-          </div>
-          {deckCopiesCount > 0 && (
-            <div className="f7-card-pips" title={`덱 내 총 ${deckCopiesCount}장`}>
-              {Array.from({ length: Math.min(deckCopiesCount, 12) }).map((_, idx) => (
-                <i key={idx} className="f7-pip-dot" />
-              ))}
-            </div>
-          )}
-          <span className="f7-card-corner bottom-right">{card.label}</span>
-        </div>
+      <div className="catan-island-frame">
+        <svg viewBox="-290 -265 580 530" className="catan-board-svg">
+          <defs>
+            <radialGradient id="oceanGrad" cx="50%" cy="50%" r="55%">
+              <stop offset="0%" stopColor="#29b6f6" />
+              <stop offset="65%" stopColor="#0288d1" />
+              <stop offset="100%" stopColor="#01579b" />
+            </radialGradient>
+          </defs>
+
+          {/* 외곽 해안 테두리 */}
+          <circle
+            cx="0"
+            cy="0"
+            r="258"
+            fill="url(#oceanGrad)"
+            stroke="#e6c994"
+            strokeWidth="8"
+          />
+
+          {/* 1. 19개 육각 지형 타일 */}
+          {room.board.hexes.map((hex) => {
+            const meta = TERRAIN_META[hex.terrain];
+            const points = Array.from({ length: 6 }, (_, i) => {
+              const rad = ((60 * i - 30) * Math.PI) / 180;
+              return `${hex.cx + (HEX_RADIUS - 1.5) * Math.cos(rad)},${
+                hex.cy + (HEX_RADIUS - 1.5) * Math.sin(rad)
+              }`;
+            }).join(' ');
+
+            const isRobberHere = room.robberHexId === hex.id;
+            const isRobberCandidate = showRobberTargets && !isRobberHere;
+            const isHighProb = hex.numberToken === 6 || hex.numberToken === 8;
+
+            return (
+              <g
+                key={hex.id}
+                className={isRobberCandidate ? 'svg-clickable-target' : ''}
+                onClick={() => isRobberCandidate && handleBoardHexClick(hex.id, room, isSolo)}
+              >
+                <polygon
+                  points={points}
+                  fill={meta.fill}
+                  stroke={isRobberCandidate ? '#fde047' : '#f3e5ab'}
+                  strokeWidth={isRobberCandidate ? 3.5 : 2.5}
+                />
+
+                {/* 지형 이모지 & 이름 */}
+                <text
+                  x={hex.cx}
+                  y={hex.cy - 14}
+                  textAnchor="middle"
+                  fontSize="18"
+                  pointerEvents="none"
+                >
+                  {meta.icon}
+                </text>
+                <text
+                  x={hex.cx}
+                  y={hex.cy + 30}
+                  textAnchor="middle"
+                  fontSize="9.5"
+                  fontWeight="800"
+                  fill="#fffdf9"
+                  stroke="rgba(0,0,0,0.55)"
+                  strokeWidth="2.2"
+                  paintOrder="stroke"
+                  pointerEvents="none"
+                >
+                  {meta.label}
+                </text>
+
+                {/* 숫자 토큰 (2~12) */}
+                {hex.numberToken !== null && (
+                  <g pointerEvents="none">
+                    <circle
+                      cx={hex.cx}
+                      cy={hex.cy + 8}
+                      r="14.5"
+                      fill="#fffdf7"
+                      stroke="#5d4037"
+                      strokeWidth="1.8"
+                    />
+                    <text
+                      x={hex.cx}
+                      y={hex.cy + 13}
+                      textAnchor="middle"
+                      fontSize="14"
+                      fontWeight="900"
+                      fill={isHighProb ? '#d32f2f' : '#2c1810'}
+                    >
+                      {hex.numberToken}
+                    </text>
+                  </g>
+                )}
+
+                {/* 도둑 말 */}
+                {isRobberHere && (
+                  <g pointerEvents="none">
+                    <circle
+                      cx={hex.cx + 18}
+                      cy={hex.cy - 10}
+                      r="12"
+                      fill="#212121"
+                      stroke="#fde047"
+                      strokeWidth="2"
+                    />
+                    <text
+                      x={hex.cx + 18}
+                      y={hex.cy - 5}
+                      textAnchor="middle"
+                      fontSize="13"
+                    >
+                      🏴‍☠️
+                    </text>
+                  </g>
+                )}
+              </g>
+            );
+          })}
+
+          {/* 2. 72개 변 (도로 및 도로 건설 후보) */}
+          {room.board.edges.map((edge) => {
+            const roadSlot = room.roads?.[String(edge.id)];
+            const isSetupRoad =
+              room.phase === 'SETUP_1_ROAD' || room.phase === 'SETUP_2_ROAD';
+            const canBuildHere =
+              showRoadSpots &&
+              canBuildRoadAt(
+                edge.id,
+                actorId,
+                room.board,
+                room.buildings || {},
+                room.roads || {},
+                isSetupRoad ? room.lastPlacedVertexId : null
+              );
+
+            if (!roadSlot && !canBuildHere) return null;
+
+            return (
+              <g
+                key={edge.id}
+                className={canBuildHere ? 'svg-clickable-target' : ''}
+                onClick={() => canBuildHere && handleBoardEdgeClick(edge.id, room, isSolo)}
+              >
+                {roadSlot ? (
+                  <>
+                    <line
+                      x1={edge.x1}
+                      y1={edge.y1}
+                      x2={edge.x2}
+                      y2={edge.y2}
+                      stroke="#2c1810"
+                      strokeWidth="9"
+                      strokeLinecap="round"
+                    />
+                    <line
+                      x1={edge.x1}
+                      y1={edge.y1}
+                      x2={edge.x2}
+                      y2={edge.y2}
+                      stroke={PLAYER_COLOR_META[roadSlot.color].hex}
+                      strokeWidth="5.5"
+                      strokeLinecap="round"
+                    />
+                  </>
+                ) : (
+                  <line
+                    x1={edge.x1}
+                    y1={edge.y1}
+                    x2={edge.x2}
+                    y2={edge.y2}
+                    stroke="#fde047"
+                    strokeWidth="7"
+                    strokeDasharray="4 4"
+                    strokeLinecap="round"
+                    opacity="0.88"
+                  />
+                )}
+              </g>
+            );
+          })}
+
+          {/* 3. 54개 꼭짓점 (마을, 도시 및 건설 후보) */}
+          {room.board.vertices.map((vertex) => {
+            const building = room.buildings?.[String(vertex.id)];
+            const isSetupSettlement =
+              room.phase === 'SETUP_1_SETTLEMENT' || room.phase === 'SETUP_2_SETTLEMENT';
+
+            const canPlaceSettlement =
+              showSettlementSpots &&
+              canBuildSettlementAt(
+                vertex.id,
+                actorId,
+                room.board,
+                room.buildings || {},
+                room.roads || {},
+                isSetupSettlement
+              );
+
+            const canUpgradeCity =
+              showCitySpots &&
+              building?.ownerId === actorId &&
+              building?.type === 'settlement';
+
+            const isClickable = canPlaceSettlement || canUpgradeCity;
+
+            if (!building && !canPlaceSettlement) return null;
+
+            return (
+              <g
+                key={vertex.id}
+                className={isClickable ? 'svg-clickable-target' : ''}
+                onClick={() => isClickable && handleBoardVertexClick(vertex.id, room, isSolo)}
+              >
+                {building ? (
+                  building.type === 'settlement' ? (
+                    <g>
+                      <polygon
+                        points={`${vertex.x},${vertex.y - 12} ${vertex.x + 10},${
+                          vertex.y - 3
+                        } ${vertex.x + 10},${vertex.y + 9} ${vertex.x - 10},${
+                          vertex.y + 9
+                        } ${vertex.x - 10},${vertex.y - 3}`}
+                        fill={PLAYER_COLOR_META[building.color].hex}
+                        stroke={canUpgradeCity ? '#fde047' : '#2c1810'}
+                        strokeWidth={canUpgradeCity ? 3.5 : 2}
+                      />
+                    </g>
+                  ) : (
+                    <g>
+                      <rect
+                        x={vertex.x - 12}
+                        y={vertex.y - 12}
+                        width="24"
+                        height="24"
+                        rx="4"
+                        fill={PLAYER_COLOR_META[building.color].hex}
+                        stroke="#fde047"
+                        strokeWidth="2.5"
+                      />
+                      <text
+                        x={vertex.x}
+                        y={vertex.y + 5}
+                        textAnchor="middle"
+                        fontSize="13"
+                        pointerEvents="none"
+                      >
+                        🏰
+                      </text>
+                    </g>
+                  )
+                ) : (
+                  <circle
+                    cx={vertex.x}
+                    cy={vertex.y}
+                    r="8.5"
+                    fill="rgba(253, 224, 71, 0.85)"
+                    stroke="#4e342e"
+                    strokeWidth="2"
+                  />
+                )}
+              </g>
+            );
+          })}
+        </svg>
       </div>
     );
   };
 
-  const renderCasinoChipStack = (amount: number, label?: string) => {
-    const stackCount = amount <= 0 ? 1 : amount < 1000 ? 2 : amount < 3000 ? 3 : amount < 7000 ? 4 : 5;
-    const chipColorClass =
-      amount >= 5000 ? 'chip-gold' : amount >= 2000 ? 'chip-red' : 'chip-blue';
+  // =========================================================================
+  // 공용 플레이 화면 렌더링 (단독 / 넷게임 통합 UI)
+  // =========================================================================
+  const renderCatanPlayScreen = (room: NetCatanRoomData, isSolo: boolean) => {
+    const players = room.players || [];
+    const activePlayer = players[room.currentTurnIdx] || players[0];
+    const me = isSolo
+      ? activePlayer
+      : players.find((p) => p.id === mySessionId) || activePlayer;
+
+    const amISpectator =
+      !isSolo && (room.spectators || []).some((s) => s.id === mySessionId);
+    const amIWaitlisted =
+      !isSolo && (room.waitlist || []).some((w) => w.id === mySessionId);
+
+    const isMyTurn =
+      room.status === 'PLAYING' &&
+      !amISpectator &&
+      (isSolo || activePlayer?.id === mySessionId);
+
+    const isRoundEnded = room.status === 'ROUND_OVER' || room.status === 'MATCH_OVER';
+    const timeLeft = isSolo ? soloRemainingSec : remainingSeconds;
 
     return (
-      <div className="casino-chip-widget">
-        <div className="chip-stack-visual">
-          {Array.from({ length: stackCount }).map((_, idx) => (
+      <div className="catan-container" style={{ background: WOOD_BG_THEMES[0] }}>
+        {/* 칩 베팅 날아오기 이펙트 */}
+        <div className="chip-fly-layer">
+          {chipFlyEffects.map((chip) => (
             <div
-              key={idx}
-              className={`casino-chip-disc ${chipColorClass}`}
-              style={{ bottom: `${idx * 4}px`, zIndex: idx + 1 }}
+              key={chip.id}
+              className="flying-poker-chip"
+              style={{ backgroundColor: chip.color }}
             >
-              <span>7</span>
+              <div className="chip-inner-ring">
+                <span>{chip.playerName}</span>
+                <strong>{chip.amount.toLocaleString()}</strong>
+              </div>
             </div>
           ))}
         </div>
-        <div className="chip-stack-info">
-          {label && <span className="chip-stack-label">{label}</span>}
-          <strong className="chip-stack-value">{amount.toLocaleString()}</strong>
+
+        {/* 승자 폭죽 */}
+        {showFireworks && (
+          <div className="fireworks-overlay" aria-hidden="true">
+            <div className="firework-burst fb-1" />
+            <div className="firework-burst fb-2" />
+            <div className="firework-burst fb-3" />
+            <div className="firework-burst fb-4" />
+            <div className="firework-burst fb-5" />
+          </div>
+        )}
+
+        {/* 토스트 알림 */}
+        {toast && (
+          <div key={toast.id} className={`catan-toast ${toast.type}`}>
+            {toast.text}
+          </div>
+        )}
+
+        <div className="play-wrapper compact-tablet-mode">
+          {/* 상단 헤더: 라운드/목표점수/타이머 + 플레이어 상태바 */}
+          <div className="game-header compact-header">
+            <div className="net-level-timer-box">
+              <span className="net-level-badge">
+                제{room.roundNumber}국 · 목표 {room.targetVP}점
+              </span>
+              {!isRoundEnded && (
+                <span className={`net-timer-badge ${timeLeft <= 10 ? 'urgent' : ''}`}>
+                  ⏱️ {timeLeft}초
+                </span>
+              )}
+            </div>
+
+            <div className="player-status-bar">
+              {players.map((p, idx) => {
+                const isActive = !isRoundEnded && idx === room.currentTurnIdx;
+                const vp = calculatePlayerVP(
+                  p,
+                  room.buildings || {},
+                  room.longestRoadOwnerId,
+                  room.largestArmyOwnerId
+                );
+                const cardCount = getTotalResources(p.resources);
+                const cMeta = PLAYER_COLOR_META[p.color];
+
+                return (
+                  <div
+                    key={p.id}
+                    className={`player-badge-card ${isActive ? 'active-turn-spotlight' : ''}`}
+                  >
+                    <div className="player-badge-top">
+                      <span
+                        className="catan-color-dot"
+                        style={{ backgroundColor: cMeta.hex }}
+                      />
+                      <strong className={isActive ? 'turn-hero-name' : ''}>
+                        {isActive && '>'}
+                        {p.name}
+                      </strong>
+                      <span className="vp-score-pill">⭐{vp}점</span>
+                      <span className="card-count-pill">🃏{cardCount}</span>
+                      {room.longestRoadOwnerId === p.id && (
+                        <span className="special-badge" title="최장 교역로 (+2점)">
+                          🛣️
+                        </span>
+                      )}
+                      {room.largestArmyOwnerId === p.id && (
+                        <span className="special-badge" title="최강 기사단 (+2점)">
+                          ⚔️
+                        </span>
+                      )}
+                      <span className="win-count-pill">🏆{p.wins}승</span>
+                      <span className="badge-score">💰{p.chips.toLocaleString()}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <button
+              type="button"
+              className="btn btn-secondary btn-compact-setup"
+              onClick={() => {
+                if (isSolo) setSoloScreen('SETUP');
+                else void handleLeaveNetRoom();
+              }}
+              title="나가기"
+            >
+              🚪
+            </button>
+          </div>
+
+          {(amIWaitlisted || (room.waitlist || []).length > 0) && !isSolo && !amISpectator && (
+            <div className="net-waitlist-strip">
+              {amIWaitlisted
+                ? '⏳ 현재 다음 판 예약 대기 중입니다!'
+                : `⏳ 다음 판 예약자 (${room.waitlist.length}명): ${room.waitlist
+                    .map((w) => w.name)
+                    .join(', ')}`}
+            </div>
+          )}
+
+          {/* 중앙 카탄 보드 테이블 */}
+          <div className="catan-table-board">
+            {isRoundEnded ? (
+              <div className="winner-celebration-top-bar">
+                <div className="winner-celebrate-title">{room.winnerAnnouncement}</div>
+                <div className="winner-celebrate-actions">
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ padding: '6px 14px', fontSize: '13px' }}
+                    onClick={() => {
+                      if (isSolo) setSoloScreen('SETUP');
+                      else void handleLeaveNetRoom();
+                    }}
+                  >
+                    🚪 나가기
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-success"
+                    style={{ width: 'auto', padding: '6px 18px', fontSize: '14px' }}
+                    onClick={() => {
+                      if (isSolo) startSoloMatch(room.status === 'ROUND_OVER');
+                      else void handleStartNetRound(room.status === 'ROUND_OVER');
+                    }}
+                  >
+                    {room.status === 'MATCH_OVER'
+                      ? '🔄 새 매치 시작 (10,000칩 초기화)'
+                      : `🔥 다음 개척 시작 (${room.anteBet.toLocaleString()}칩)`}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div key={room.turnNotice} className="catan-notice-banner">
+                {room.turnNotice}
+              </div>
+            )}
+
+            {/* 상단 상태 스트립: 주사위 + 누적 POT + 건설 비용 요약 */}
+            <div className="catan-top-strip">
+              <div className="dice-display-box">
+                <span className="die-face">{room.dice[0]}</span>
+                <span className="die-face">{room.dice[1]}</span>
+                <strong className="dice-sum">합 {room.dice[0] + room.dice[1]}</strong>
+              </div>
+
+              <div className="center-pot-box">
+                <span className="pot-label">💰 누적 POT</span>
+                <strong className="pot-amount">{(room.pot || 0).toLocaleString()} 칩</strong>
+              </div>
+
+              <div className="cost-guide-mini" title="건설 비용">
+                <span>🛣️🌲🧱</span>
+                <span>🏡🌲🧱🐑🌾</span>
+                <span>🏰🌾2⛰️3</span>
+                <span>📜🐑🌾⛰️</span>
+              </div>
+            </div>
+
+            {/* 육각 섬 보드 */}
+            <div className="board-center-stage">
+              {renderCatanSvgBoard(room, isMyTurn, isSolo)}
+            </div>
+          </div>
+
+          {/* 하단 조작 도크: 내 보유 자원 + 발전 카드 + 건설/무역/턴종료 버튼 */}
+          <div className="catan-bottom-dock">
+            {amISpectator ? (
+              <div className="waiting-dock-msg">👀 관전 모드로 개척 대결을 지켜보고 있습니다.</div>
+            ) : isRoundEnded ? (
+              <div className="waiting-dock-msg">
+                🎉 개척 종료! 상단의 <strong>[다음 개척 시작]</strong> 버튼을 눌러 승수와 판돈을
+                이어가세요!
+              </div>
+            ) : (
+              <>
+                {/* 보유 자원 & 발전 카드 현황 */}
+                <div className="my-hand-bar">
+                  <div className="my-owner-tag">
+                    <span
+                      className="catan-color-dot"
+                      style={{ backgroundColor: PLAYER_COLOR_META[me.color].hex }}
+                    />
+                    <strong>{me.name}</strong>
+                  </div>
+
+                  <div className="resource-pills-row">
+                    {RESOURCE_KEYS.map((resKey) => {
+                      const rMeta = RESOURCE_META[resKey];
+                      return (
+                        <span
+                          key={resKey}
+                          className="res-pill"
+                          style={{ backgroundColor: rMeta.badgeBg, color: rMeta.textColor }}
+                        >
+                          {rMeta.icon} {rMeta.label} <strong>{me.resources[resKey]}</strong>
+                        </span>
+                      );
+                    })}
+                  </div>
+
+                  {/* 사용 가능한 발전 카드 목록 */}
+                  {(me.devCards.length > 0 || me.newDevCards.length > 0) && (
+                    <div className="dev-cards-row">
+                      {me.devCards.map((card, i) => (
+                        <button
+                          key={`${card}_${i}`}
+                          type="button"
+                          disabled={!isMyTurn || card === 'victory'}
+                          className="dev-card-chip"
+                          title={DEV_CARD_META[card].desc}
+                          onClick={() => {
+                            if (card === 'year_of_plenty' || card === 'monopoly') {
+                              setDevEffectModal({ type: card, res1: 'wood', res2: 'brick' });
+                            } else if (isSolo) {
+                              runSoloAction(
+                                (r) => applyPlayDevCard(r, me.id, card),
+                                card === 'knight' ? 'robber' : 'build'
+                              );
+                            } else {
+                              void runNetAction(
+                                (r) => applyPlayDevCard(r, mySessionId, card),
+                                card === 'knight' ? 'robber' : 'build'
+                              );
+                            }
+                          }}
+                        >
+                          {DEV_CARD_META[card].icon} {DEV_CARD_META[card].label}
+                        </button>
+                      ))}
+                      {me.newDevCards.map((card, i) => (
+                        <span
+                          key={`new_${card}_${i}`}
+                          className="dev-card-chip locked"
+                          title="다음 턴부터 사용 가능"
+                        >
+                          🔒 {DEV_CARD_META[card].label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* 행동 버튼 바 */}
+                <div className="action-buttons-bar">
+                  {!isMyTurn ? (
+                    <span className="waiting-dock-msg">
+                      ⏳ <strong>{activePlayer?.name}</strong>님이 개척 행동을 진행 중입니다...
+                    </span>
+                  ) : room.phase === 'ROLL_DICE' ? (
+                    <button
+                      type="button"
+                      className="btn btn-success"
+                      style={{ width: 'auto', padding: '8px 24px' }}
+                      onClick={() => {
+                        if (isSolo) {
+                          runSoloAction((r) => {
+                            applyDiceRoll(r, me.id);
+                            return null;
+                          }, 'dice');
+                        } else {
+                          void runNetAction((r) => {
+                            applyDiceRoll(r, mySessionId);
+                            return null;
+                          }, 'dice');
+                        }
+                      }}
+                    >
+                      🎲 주사위 굴리기
+                    </button>
+                  ) : room.phase === 'MAIN_TURN' ? (
+                    <>
+                      <button
+                        type="button"
+                        className={`btn action-btn ${buildMode === 'ROAD' ? 'selected' : ''}`}
+                        onClick={() => setBuildMode((m) => (m === 'ROAD' ? 'NONE' : 'ROAD'))}
+                      >
+                        🛣️ 도로
+                      </button>
+                      <button
+                        type="button"
+                        className={`btn action-btn ${
+                          buildMode === 'SETTLEMENT' ? 'selected' : ''
+                        }`}
+                        onClick={() =>
+                          setBuildMode((m) => (m === 'SETTLEMENT' ? 'NONE' : 'SETTLEMENT'))
+                        }
+                      >
+                        🏡 마을
+                      </button>
+                      <button
+                        type="button"
+                        className={`btn action-btn ${buildMode === 'CITY' ? 'selected' : ''}`}
+                        onClick={() => setBuildMode((m) => (m === 'CITY' ? 'NONE' : 'CITY'))}
+                      >
+                        🏰 도시
+                      </button>
+                      <button
+                        type="button"
+                        className="btn action-btn"
+                        onClick={() => {
+                          if (isSolo) {
+                            runSoloAction((r) => applyBuyDevCard(r, me.id, 'SOLO'), 'build');
+                          } else {
+                            void runNetAction(
+                              (r) => applyBuyDevCard(r, mySessionId, 'NET'),
+                              'build'
+                            );
+                          }
+                        }}
+                      >
+                        📜 발전카드 ({room.devDeck.length})
+                      </button>
+                      <button
+                        type="button"
+                        className="btn action-btn"
+                        onClick={() => {
+                          setTradeTargetPlayerId('BANK');
+                          setTradeModalOpen(true);
+                        }}
+                      >
+                        ⛵ 무역/교환
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={() => {
+                          setBuildMode('NONE');
+                          if (isSolo) {
+                            runSoloAction((r) => {
+                              applyEndTurn(r, me.id);
+                              return null;
+                            });
+                            setSoloRemainingSec(soloTimeoutSec);
+                          } else {
+                            void runNetAction((r) => {
+                              applyEndTurn(r, mySessionId);
+                              return null;
+                            });
+                          }
+                        }}
+                      >
+                        ⏭️ 턴 종료
+                      </button>
+                    </>
+                  ) : (
+                    <span className="turn-owner-pill large-turn-pill">
+                      👆 위 육각 보드에서 노란색으로 표시된 위치를 클릭하세요!
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
         </div>
+
+        {/* 무역 / 교환 모달 */}
+        {tradeModalOpen && (
+          <div className="modal-overlay" onClick={() => setTradeModalOpen(false)}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+              <h3 style={{ margin: '0 0 10px' }}>⛵ 자원 무역 및 플레이어 교환</h3>
+              <p className="modal-subtext">
+                은행 해상 무역은 <strong>4:1</strong>, 다른 플레이어와는 <strong>1:1</strong>로
+                교환합니다.
+              </p>
+
+              <div className="setting-section" style={{ textAlign: 'left' }}>
+                <label className="setting-label">거래 대상 선택</label>
+                <select
+                  className="player-input"
+                  style={{ width: '100%' }}
+                  value={tradeTargetPlayerId}
+                  onChange={(e) => setTradeTargetPlayerId(e.target.value)}
+                >
+                  <option value="BANK">⛵ 은행 해상 무역 (내 자원 4장 → 원하는 자원 1장)</option>
+                  {players
+                    .filter((p) => p.id !== me.id)
+                    .map((p) => (
+                      <option key={p.id} value={p.id}>
+                        🤝 {p.name}님과 1:1 교환 (보유 {getTotalResources(p.resources)}장)
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                <div className="setting-section">
+                  <label className="setting-label">
+                    내가 줄 자원 ({tradeTargetPlayerId === 'BANK' ? '4장' : '1장'})
+                  </label>
+                  <select
+                    className="player-input"
+                    style={{ width: '100%' }}
+                    value={tradeGiveRes}
+                    onChange={(e) => setTradeGiveRes(e.target.value as ResourceType)}
+                  >
+                    {RESOURCE_KEYS.map((k) => (
+                      <option key={k} value={k}>
+                        {RESOURCE_META[k].icon} {RESOURCE_META[k].label} (보유: {me.resources[k]})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="setting-section">
+                  <label className="setting-label">받을 자원 (1장)</label>
+                  <select
+                    className="player-input"
+                    style={{ width: '100%' }}
+                    value={tradeGetRes}
+                    onChange={(e) => setTradeGetRes(e.target.value as ResourceType)}
+                  >
+                    {RESOURCE_KEYS.map((k) => (
+                      <option key={k} value={k}>
+                        {RESOURCE_META[k].icon} {RESOURCE_META[k].label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ flex: 1 }}
+                  onClick={() => setTradeModalOpen(false)}
+                >
+                  취소
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-success"
+                  style={{ flex: 2 }}
+                  onClick={() => handleExecuteTrade(room, isSolo)}
+                >
+                  ✅ 교환 실행
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 풍년 / 독점 발전 카드 자원 선택 모달 */}
+        {devEffectModal && (
+          <div className="modal-overlay" onClick={() => setDevEffectModal(null)}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+              <h3 style={{ margin: '0 0 10px' }}>
+                {DEV_CARD_META[devEffectModal.type].icon}{' '}
+                {DEV_CARD_META[devEffectModal.type].label} 카드 발동
+              </h3>
+              <p className="modal-subtext">{DEV_CARD_META[devEffectModal.type].desc}</p>
+
+              <div className="setting-section">
+                <label className="setting-label">첫 번째 선택 자원</label>
+                <select
+                  className="player-input"
+                  style={{ width: '100%' }}
+                  value={devEffectModal.res1}
+                  onChange={(e) =>
+                    setDevEffectModal({
+                      ...devEffectModal,
+                      res1: e.target.value as ResourceType,
+                    })
+                  }
+                >
+                  {RESOURCE_KEYS.map((k) => (
+                    <option key={k} value={k}>
+                      {RESOURCE_META[k].icon} {RESOURCE_META[k].label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {devEffectModal.type === 'year_of_plenty' && (
+                <div className="setting-section">
+                  <label className="setting-label">두 번째 선택 자원</label>
+                  <select
+                    className="player-input"
+                    style={{ width: '100%' }}
+                    value={devEffectModal.res2}
+                    onChange={(e) =>
+                      setDevEffectModal({
+                        ...devEffectModal,
+                        res2: e.target.value as ResourceType,
+                      })
+                    }
+                  >
+                    {RESOURCE_KEYS.map((k) => (
+                      <option key={k} value={k}>
+                        {RESOURCE_META[k].icon} {RESOURCE_META[k].label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <button
+                type="button"
+                className="btn btn-success"
+                onClick={() => {
+                  const payload = {
+                    res1: devEffectModal.res1,
+                    res2: devEffectModal.res2,
+                  };
+                  if (isSolo) {
+                    runSoloAction(
+                      (r) => applyPlayDevCard(r, me.id, devEffectModal.type, payload),
+                      'build'
+                    );
+                  } else {
+                    void runNetAction(
+                      (r) => applyPlayDevCard(r, mySessionId, devEffectModal.type, payload),
+                      'build'
+                    );
+                  }
+                  setDevEffectModal(null);
+                }}
+              >
+                ✨ 효과 적용하기
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     );
   };
-
-  const renderResultBadge = (result: FlipRoundResult) => {
-    switch (result) {
-      case 'FLIP7_WIN':
-        return <span className="f7-res-badge flip7">👑 FLIP 7 대승리! (+15점)</span>;
-      case 'WIN':
-        return <span className="f7-res-badge win">🎉 라운드 승리!</span>;
-      case 'BUST':
-        return <span className="f7-res-badge lose">💥 버스트 (중복 숫자)</span>;
-      case 'OUT':
-        return <span className="f7-res-badge out">🚫 판돈 소진 아웃</span>;
-      case 'LOSE':
-        return <span className="f7-res-badge lose">😢 패배</span>;
-      default:
-        return null;
-    }
-  };
-
-  const renderFireworksAndChips = () => (
-    <>
-      <div className="chip-fly-layer">
-        {chipFlyEffects.map((chip) => (
-          <div
-            key={chip.id}
-            className="flying-poker-chip"
-            style={{ backgroundColor: chip.color }}
-          >
-            <div className="chip-inner-ring">
-              <span>{chip.playerName}</span>
-              <strong>+{chip.amount.toLocaleString()}</strong>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {showFireworks && (
-        <div className="fireworks-overlay" aria-hidden="true">
-          <div className="firework-burst fb-1" />
-          <div className="firework-burst fb-2" />
-          <div className="firework-burst fb-3" />
-          <div className="firework-burst fb-4" />
-          <div className="firework-burst fb-5" />
-        </div>
-      )}
-    </>
-  );
 
   // =========================================================================
   // 1. 홈 화면 (HOME)
   // =========================================================================
   if (appMode === 'HOME') {
     return (
-      <div className="f7-container" style={{ background: PLAYER_BG_COLORS[0] }}>
-        <div className="setup-card home-entry-card arcade-panel">
-          <div className="f7-logo-badge">
-            <span className="logo-word">FLIP</span>
-            <span className="logo-seven">7</span>
-          </div>
-          <p className="home-subtitle">중복 없이 서로 다른 숫자 7장을 뒤집어라!</p>
-
-          <div className="preview-fan-cards" aria-hidden="true">
-            <div className="mini-fan-card c1">3</div>
-            <div className="mini-fan-card c2">7</div>
-            <div className="mini-fan-card c3">12</div>
-            <div className="mini-fan-card c4">×2</div>
-          </div>
+      <div className="catan-container" style={{ background: WOOD_BG_THEMES[0] }}>
+        <div className="setup-card home-entry-card">
+          <div className="home-castle-icon">🏝️🏡⛵</div>
+          <h1 className="setup-title">카탄의 개척자 (CATAN)</h1>
+          <p className="home-subtitle">
+            자원 생산과 무역 · 도로와 도시 건설 · 목표 승점 달성 시 판돈 독식
+          </p>
 
           <div className="mode-select-grid">
             <button
               type="button"
               className="mode-select-btn solo"
               onClick={() => {
-                setGameState('SETUP');
+                setSoloScreen('SETUP');
                 setAppMode('SOLO');
               }}
             >
               <span className="mode-icon">🎮</span>
               <strong>단독게임</strong>
-              <span className="mode-desc">한 기기에서 2~4인이 함께 즐기는 로컬 대전</span>
+              <span className="mode-desc">2~4인 로컬 개척 대결 · 연승 &amp; 판돈 누적</span>
             </button>
 
             <button
@@ -1975,15 +2891,15 @@ export default function Page4() {
               className="mode-select-btn net"
               onClick={() => setAppMode('NET_LOBBY')}
             >
-              <span className="mode-icon">🪙</span>
-              <strong>넷게임 (판돈 서바이벌)</strong>
-              <span className="mode-desc">칩을 베팅하고 승리 시 독식·누적, 소진 시 아웃!</span>
+              <span className="mode-icon">🌐</span>
+              <strong>넷게임</strong>
+              <span className="mode-desc">실시간 4개 카탄 섬 테이블 대전 &amp; 관전</span>
             </button>
           </div>
 
           <button
             type="button"
-            className="btn btn-arcade-gold"
+            className="btn btn-secondary"
             style={{ marginTop: '14px', width: '100%' }}
             onClick={() => setAppMode('HALL_OF_FAME')}
           >
@@ -2002,49 +2918,58 @@ export default function Page4() {
     const netRecords = getHallOfFameRecords('NET');
 
     return (
-      <div className="f7-container" style={{ background: PLAYER_BG_COLORS[0], padding: '16px' }}>
-        <div className="setup-card arcade-panel" style={{ maxWidth: '620px', margin: '0 auto' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+      <div className="catan-container" style={{ background: WOOD_BG_THEMES[0], padding: '16px' }}>
+        <div className="setup-card" style={{ maxWidth: '620px', margin: '0 auto' }}>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '12px',
+            }}
+          >
             <button type="button" className="btn btn-secondary" onClick={() => setAppMode('HOME')}>
               ⬅️ 홈으로
             </button>
-            <h2 style={{ margin: 0, color: '#fde047', textShadow: '0 2px 4px rgba(0,0,0,0.6)' }}>
-              🏅 FLIP 7 명예의 전당
-            </h2>
+            <h2 style={{ margin: 0, color: '#3e2723' }}>🏅 카탄 명예의 전당</h2>
             <div style={{ width: '60px' }} />
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-            <div className="hof-column-box">
-              <h3 style={{ margin: '0 0 10px', fontSize: '15px', color: '#38bdf8', textAlign: 'center' }}>
-                🎮 단독 플레이 TOP 10
-              </h3>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+            <div className="hof-box">
+              <h3 className="hof-title solo">🎮 단독 개척 TOP 10</h3>
               {soloRecords.length === 0 ? (
-                <p style={{ textAlign: 'center', color: '#94a3b8', fontSize: '13px' }}>기록이 없습니다.</p>
+                <p className="hof-empty">기록이 없습니다.</p>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div className="hof-list">
                   {soloRecords.map((rec, i) => (
-                    <div key={rec.id} className="hof-row-item">
-                      <span><strong>{i + 1}. {rec.name}</strong></span>
-                      <span style={{ color: '#34d399', fontWeight: 800 }}>{rec.scoreOrLevel}</span>
+                    <div key={rec.id} className="hof-item">
+                      <span>
+                        <strong>
+                          {i + 1}. {rec.name}
+                        </strong>
+                      </span>
+                      <span style={{ color: '#2e7d32', fontWeight: 800 }}>{rec.scoreOrLevel}</span>
                     </div>
                   ))}
                 </div>
               )}
             </div>
 
-            <div className="hof-column-box">
-              <h3 style={{ margin: '0 0 10px', fontSize: '15px', color: '#fbbf24', textAlign: 'center' }}>
-                🪙 넷플레이 TOP 10
-              </h3>
+            <div className="hof-box">
+              <h3 className="hof-title net">🌐 넷개척 TOP 10</h3>
               {netRecords.length === 0 ? (
-                <p style={{ textAlign: 'center', color: '#94a3b8', fontSize: '13px' }}>기록이 없습니다.</p>
+                <p className="hof-empty">기록이 없습니다.</p>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div className="hof-list">
                   {netRecords.map((rec, i) => (
-                    <div key={rec.id} className="hof-row-item">
-                      <span><strong>{i + 1}. {rec.name}</strong></span>
-                      <span style={{ color: '#fbbf24', fontWeight: 800 }}>{rec.scoreOrLevel}</span>
+                    <div key={rec.id} className="hof-item">
+                      <span>
+                        <strong>
+                          {i + 1}. {rec.name}
+                        </strong>
+                      </span>
+                      <span style={{ color: '#b45309', fontWeight: 800 }}>{rec.scoreOrLevel}</span>
                     </div>
                   ))}
                 </div>
@@ -2061,19 +2986,19 @@ export default function Page4() {
   // =========================================================================
   if (appMode === 'NET_LOBBY') {
     return (
-      <div className="f7-container" style={{ background: PLAYER_BG_COLORS[0] }}>
+      <div className="catan-container" style={{ background: WOOD_BG_THEMES[0] }}>
         <div className="net-lobby-container">
           <div className="net-lobby-header">
             <button type="button" className="btn btn-secondary" onClick={() => setAppMode('HOME')}>
               ⬅️ 홈으로
             </button>
-            <h2 style={{ margin: 0, fontSize: '19px', color: '#fde047', fontWeight: 900 }}>
-              🪙 FLIP 7 게임 테이블 로비
+            <h2 style={{ margin: 0, fontSize: '20px', color: '#3e2723' }}>
+              🌐 카탄 넷게임 (4개 개척 섬)
             </h2>
             <button
               type="button"
-              className="btn btn-arcade-gold"
-              style={{ fontSize: '12px', padding: '7px 12px' }}
+              className="btn btn-secondary"
+              style={{ fontSize: '12px' }}
               onClick={() => setAppMode('HALL_OF_FAME')}
             >
               🏅 명예의전당
@@ -2088,16 +3013,15 @@ export default function Page4() {
               const isEmpty = room.status === 'EMPTY' || roomPlayers.length === 0;
               const isWaiting = room.status === 'WAITING' && roomPlayers.length > 0;
               const isPlaying =
-                room.status === 'BETTING' ||
                 room.status === 'PLAYING' ||
                 room.status === 'ROUND_OVER' ||
                 room.status === 'MATCH_OVER';
               const isFull = roomPlayers.length >= 4;
 
-              let statusBadgeText = '🟢 빈 테이블';
+              let statusBadgeText = '🟢 빈 개척섬';
               let statusClass = 'empty';
               if (isPlaying) {
-                statusBadgeText = `🔥 ${room.roundNumber}라운드 진행중`;
+                statusBadgeText = `🔥 제 ${room.roundNumber}국 진행중`;
                 statusClass = 'playing';
               } else if (isWaiting) {
                 statusBadgeText = isFull
@@ -2125,35 +3049,29 @@ export default function Page4() {
                   }}
                 >
                   <div className="room-card-top">
-                    <span className="room-number-title">🃏 TABLE #{room.roomId}</span>
+                    <span className="room-number-title">🏝️ 제 {room.roomId} 카탄섬</span>
                     <span className={`room-status-pill ${statusClass}`}>{statusBadgeText}</span>
                   </div>
 
                   <div className="room-rules-info">
-                    <span>🪙 최소 판돈: {room.minBet.toLocaleString()}칩</span>
-                    <span>⏱️ 턴 제한: {room.baseTimeout}초</span>
+                    <span>💰 판돈: {room.anteBet.toLocaleString()}칩</span>
+                    <span>⭐ 목표: {room.targetVP}점</span>
+                    <span>⏱️ {room.baseTimeout}초</span>
                   </div>
 
                   <div className="room-members-box">
-                    <div className="room-members-label">착석 플레이어 ({roomPlayers.length}/4):</div>
+                    <div className="room-members-label">개척자 ({roomPlayers.length}/4):</div>
                     <div className="room-members-chips">
                       {roomPlayers.length === 0 ? (
-                        <span className="empty-member-text">첫 번째 도전자 대기 중</span>
+                        <span className="empty-member-text">첫 번째 개척자를 기다리고 있습니다</span>
                       ) : (
-                        roomPlayers.map((p, idx) => (
-                          <span
-                            key={p.id}
-                            className="member-chip"
-                            style={{
-                              borderColor: PIECE_COLORS[idx],
-                              opacity: p.isEliminated ? 0.45 : 1,
-                            }}
-                          >
-                            <i style={{ backgroundColor: PIECE_COLORS[idx] }} />
-                            {p.name}{' '}
-                            {p.isEliminated
-                              ? '(아웃)'
-                              : `(${p.wins || 0}승 · ${(p.chips ?? INITIAL_CHIPS).toLocaleString()})`}
+                        roomPlayers.map((p) => (
+                          <span key={p.id} className="member-chip">
+                            <span
+                              className="catan-color-dot"
+                              style={{ backgroundColor: PLAYER_COLOR_META[p.color].hex }}
+                            />
+                            {p.name} ({p.wins}승 · {p.chips.toLocaleString()}칩)
                           </span>
                         ))
                       )}
@@ -2161,24 +3079,28 @@ export default function Page4() {
                   </div>
 
                   {roomSpectators.length > 0 && (
-                    <div className="room-waitlist-box" style={{ color: '#7dd3fc', background: 'rgba(14,165,233,0.18)' }}>
-                      👀 관망 중 ({roomSpectators.length}명): {roomSpectators.map((s) => s.name).join(', ')}
+                    <div
+                      className="room-waitlist-box"
+                      style={{ color: '#0369a1', background: '#f0f9ff' }}
+                    >
+                      👀 관전 중 ({roomSpectators.length}명):{' '}
+                      {roomSpectators.map((s) => s.name).join(', ')}
                     </div>
                   )}
 
                   {roomWaitlist.length > 0 && (
                     <div className="room-waitlist-box">
-                      ⏳ 다음 매치 예약 ({roomWaitlist.length}명):{' '}
+                      ⏳ 다음 판 예약 ({roomWaitlist.length}명):{' '}
                       {roomWaitlist.map((w) => w.name).join(', ')}
                     </div>
                   )}
 
                   <div className="room-enter-cta">
                     {isEmpty
-                      ? '👉 클릭하여 테이블 착석 또는 관망하기'
+                      ? '👉 클릭하여 개척섬 열기 또는 관전하기'
                       : isPlaying || isFull
-                      ? '👉 클릭하여 다음 매치 예약 또는 관망하기'
-                      : '👉 클릭하여 참가하기 또는 관망하기'}
+                      ? '👉 클릭하여 다음 판 예약 또는 관전하기'
+                      : '👉 클릭하여 개척 참가 또는 관전하기'}
                   </div>
                 </div>
               );
@@ -2189,16 +3111,17 @@ export default function Page4() {
         {joinModalRoom && (
           <div className="modal-overlay" onClick={() => setJoinModalRoom(null)}>
             <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-              <h2 style={{ margin: '0 0 8px', color: '#fde047' }}>🃏 TABLE #{joinModalRoom.roomId} 입장</h2>
+              <h2 style={{ margin: '0 0 8px' }}>🏝️ 제 {joinModalRoom.roomId} 카탄섬 입장</h2>
               <p className="modal-subtext">
-                판돈을 걸고 승리하면 총 판돈을 모두 차지합니다! 판돈 소진 시 즉시 아웃됩니다.
+                동일 판돈 <strong>{joinModalRoom.anteBet.toLocaleString()}칩</strong> · 목표{' '}
+                <strong>{joinModalRoom.targetVP}점</strong> 달성 시 승자 독식!
               </p>
 
               <input
                 type="text"
                 className="player-input"
                 style={{ width: '100%', boxSizing: 'border-box', marginBottom: '14px' }}
-                placeholder="내 닉네임 입력 (예: 럭키세븐)"
+                placeholder="개척자 이름 입력 (예: 콜럼버스)"
                 value={joinPlayerName}
                 autoFocus
                 onChange={(e) => setJoinPlayerName(e.target.value)}
@@ -2209,10 +3132,10 @@ export default function Page4() {
                 <button
                   type="button"
                   className="btn btn-secondary"
-                  style={{ flex: 1 }}
+                  style={{ flex: 1, background: '#0284c7', color: '#fff' }}
                   onClick={() => handleEnterRoomSubmit(true)}
                 >
-                  👀 관망하기
+                  👀 관전하기
                 </button>
                 <button
                   type="button"
@@ -2220,7 +3143,7 @@ export default function Page4() {
                   style={{ flex: 2 }}
                   onClick={() => handleEnterRoomSubmit(false)}
                 >
-                  🚀 착석하기 / 예약하기
+                  🚀 개척 참가 / 예약
                 </button>
               </div>
             </div>
@@ -2231,15 +3154,20 @@ export default function Page4() {
   }
 
   // =========================================================================
-  // 4. 넷게임 방 내부 (판돈 베팅 -> 승리 시 독식 & 누적 -> 파산 시 아웃)
+  // 4. 넷게임 방 내부 (NET_ROOM)
   // =========================================================================
   if (appMode === 'NET_ROOM') {
     if (!activeNetRoom) {
       return (
-        <div className="f7-container" style={{ background: PLAYER_BG_COLORS[0], display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div className="setup-card arcade-panel" style={{ textAlign: 'center' }}>
-            <h2 style={{ color: '#fde047' }}>⏳ 테이블 정보를 불러오는 중입니다...</h2>
-            <button type="button" className="btn btn-secondary" style={{ marginTop: '12px' }} onClick={() => setAppMode('NET_LOBBY')}>
+        <div className="catan-container" style={{ background: WOOD_BG_THEMES[0] }}>
+          <div className="setup-card" style={{ textAlign: 'center' }}>
+            <h2>⏳ 개척섬 정보를 불러오는 중입니다...</h2>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ marginTop: '12px' }}
+              onClick={() => setAppMode('NET_LOBBY')}
+            >
               ⬅️ 로비로 돌아가기
             </button>
           </div>
@@ -2248,11 +3176,8 @@ export default function Page4() {
     }
 
     const roomPlayers = activeNetRoom.players || [];
-    const roomWaitlist = activeNetRoom.waitlist || [];
-    const roomSpectators = activeNetRoom.spectators || [];
     const isHost = roomPlayers[0]?.id === mySessionId;
-    const amIWaitlisted = roomWaitlist.some((w) => w.id === mySessionId);
-    const amISpectator = roomSpectators.some((s) => s.id === mySessionId);
+    const amISpectator = (activeNetRoom.spectators || []).some((s) => s.id === mySessionId);
 
     if (activeNetRoom.status === 'WAITING' || activeNetRoom.status === 'EMPTY') {
       const minutes = Math.floor(waitingCountdownSec / 60);
@@ -2260,8 +3185,8 @@ export default function Page4() {
       const countdownStr = `${minutes}분 ${seconds < 10 ? '0' : ''}${seconds}초`;
 
       return (
-        <div className="f7-container" style={{ background: PLAYER_BG_COLORS[0] }}>
-          <div className="setup-card arcade-panel">
+        <div className="catan-container" style={{ background: WOOD_BG_THEMES[0] }}>
+          <div className="setup-card">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <button
                 type="button"
@@ -2272,26 +3197,32 @@ export default function Page4() {
                 🚪 방 나가기
               </button>
               <span className="room-status-pill waiting">
-                TABLE #{activeNetRoom.roomId} · 대기 중 (⏱️ {countdownStr})
+                제 {activeNetRoom.roomId}섬 · 대기 중 (⏱️ {countdownStr})
               </span>
             </div>
 
-            <h1 className="setup-title" style={{ marginTop: '14px', color: '#fde047' }}>
-              🃏 FLIP 7 대기실 {amISpectator ? '👀 [관망모드]' : ''}
+            <h1 className="setup-title" style={{ marginTop: '14px' }}>
+              🏝️ 카탄 개척 대기실 {amISpectator ? '👀 [관전모드]' : ''}
             </h1>
 
             <div className="setting-section">
               <label className="setting-label">
-                🪙 최소 베팅 판돈 설정 (초기 시드 10,000칩) {isHost ? '(방장 설정 가능)' : ''}
+                💰 동일 판돈 설정 {isHost ? '(방장 설정 가능)' : ''}
               </label>
-              <div className="piece-count-selector" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
-                {[500, 1000, 2000].map((val) => (
+              <div className="piece-count-selector">
+                {[1000, 2000, 3000, 5000].map((val) => (
                   <button
                     key={val}
                     type="button"
                     disabled={!isHost}
-                    className={`count-btn ${activeNetRoom.minBet === val ? 'active' : ''}`}
-                    onClick={() => updateRoomSettings(val, activeNetRoom.baseTimeout)}
+                    className={`count-btn ${activeNetRoom.anteBet === val ? 'active' : ''}`}
+                    onClick={() =>
+                      updateNetRoomSettings(
+                        val,
+                        activeNetRoom.baseTimeout,
+                        activeNetRoom.targetVP
+                      )
+                    }
                   >
                     {val.toLocaleString()}칩
                   </button>
@@ -2301,39 +3232,66 @@ export default function Page4() {
 
             <div className="setting-section">
               <label className="setting-label">
-                ⏱️ 턴 제한시간: <strong style={{ color: '#fde047' }}>{activeNetRoom.baseTimeout}초</strong>
+                ⭐ 승리 목표 승점 {isHost ? '(방장 설정 가능)' : ''}
               </label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span style={{ fontSize: '12px', fontWeight: 700, color: '#cbd5e1' }}>30초</span>
-                <input
-                  type="range"
-                  min={30}
-                  max={180}
-                  step={10}
-                  disabled={!isHost}
-                  value={activeNetRoom.baseTimeout}
-                  style={{ flex: 1 }}
-                  onChange={(e) =>
-                    updateRoomSettings(activeNetRoom.minBet, Number(e.target.value))
-                  }
-                />
-                <span style={{ fontSize: '12px', fontWeight: 700, color: '#cbd5e1' }}>180초</span>
+              <div className="piece-count-selector">
+                {[6, 8, 10, 12].map((vp) => (
+                  <button
+                    key={vp}
+                    type="button"
+                    disabled={!isHost}
+                    className={`count-btn ${activeNetRoom.targetVP === vp ? 'active' : ''}`}
+                    onClick={() =>
+                      updateNetRoomSettings(
+                        activeNetRoom.anteBet,
+                        activeNetRoom.baseTimeout,
+                        vp
+                      )
+                    }
+                  >
+                    {vp}점 승리
+                  </button>
+                ))}
               </div>
             </div>
 
             <div className="setting-section">
-              <label className="setting-label">🧭 착석 플레이어 (2명 이상 시 시작 가능)</label>
+              <label className="setting-label">
+                ⏱️ 턴 제한시간: <strong>{activeNetRoom.baseTimeout}초</strong>
+              </label>
+              <input
+                type="range"
+                min={30}
+                max={180}
+                step={15}
+                disabled={!isHost}
+                value={activeNetRoom.baseTimeout}
+                style={{ width: '100%' }}
+                onChange={(e) =>
+                  updateNetRoomSettings(
+                    activeNetRoom.anteBet,
+                    Number(e.target.value),
+                    activeNetRoom.targetVP
+                  )
+                }
+              />
+            </div>
+
+            <div className="setting-section">
+              <label className="setting-label">🧭 입장한 개척자 (2~4명 시작 가능)</label>
               <div className="player-list">
                 {roomPlayers.map((p, idx) => (
-                  <div key={p.id} className="player-item">
+                  <div key={p.id} className="player-item-a">
                     <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span className="squircle-dot" style={{ backgroundColor: PIECE_COLORS[idx] }}>
-                        {getShortName(p.name)}
-                      </span>
-                      {p.name} {idx === 0 && '👑(방장)'} {p.id === mySessionId && '(나)'}
+                      <span
+                        className="catan-color-dot"
+                        style={{ backgroundColor: PLAYER_COLOR_META[p.color].hex }}
+                      />
+                      {p.name} ({PLAYER_COLOR_META[p.color].label}){' '}
+                      {idx === 0 && '👑(방장)'} {p.id === mySessionId && '(나)'}
                     </span>
-                    <span style={{ fontSize: '12px', color: '#fbbf24', fontWeight: 800 }}>
-                      🪙 {(p.chips ?? INITIAL_CHIPS).toLocaleString()}
+                    <span style={{ fontSize: '12px', color: '#2e7d32' }}>
+                      🏆{p.wins}승 · {p.chips.toLocaleString()}칩
                     </span>
                   </div>
                 ))}
@@ -2344,434 +3302,25 @@ export default function Page4() {
               type="button"
               className="btn btn-success"
               disabled={roomPlayers.length < 2}
-              onClick={() => handleStartNetBettingPhase(false, true)}
+              onClick={() => handleStartNetRound(false)}
             >
-              🚀 FLIP 7 게임 시작! ({roomPlayers.length}/4명)
+              🚀 카탄 개척 시작! (전원 {activeNetRoom.anteBet.toLocaleString()}칩 동일 베팅)
             </button>
           </div>
         </div>
       );
     }
 
-    const netCurrIdx = (activeNetRoom.currentPlayerIdx || 0) % Math.max(1, roomPlayers.length);
-    const netCurrPlayer = roomPlayers[netCurrIdx];
-    const isMyTurn =
-      activeNetRoom.status === 'PLAYING' &&
-      !activeNetRoom.pendingAction &&
-      netCurrPlayer?.id === mySessionId &&
-      !amISpectator;
-    const isMyPendingAction =
-      activeNetRoom.status === 'PLAYING' &&
-      activeNetRoom.pendingAction?.actorId === mySessionId &&
-      !amISpectator;
-    const myPlayerObj = roomPlayers.find((p) => p.id === mySessionId);
-    const isRoundOver = activeNetRoom.status === 'ROUND_OVER';
-    const isMatchOver = activeNetRoom.status === 'MATCH_OVER';
-    const topDiscard =
-      activeNetRoom.discardPile && activeNetRoom.discardPile.length > 0
-        ? activeNetRoom.discardPile[activeNetRoom.discardPile.length - 1]
-        : null;
-
-    return (
-      <div
-        className="f7-container"
-        style={{ background: PLAYER_BG_COLORS[netCurrIdx % PLAYER_BG_COLORS.length] }}
-      >
-        {renderFireworksAndChips()}
-
-        {toast && (
-          <div key={toast.id} className={`f7-toast ${toast.type}`}>
-            {toast.text}
-          </div>
-        )}
-
-        <div className="play-wrapper compact-tablet-mode">
-          <div className="game-header compact-header">
-            <div className="net-level-timer-box">
-              <span className="net-level-badge">
-                {activeNetRoom.roundNumber}R {amISpectator ? '👀' : ''}
-              </span>
-              {!isRoundOver && !isMatchOver && (
-                <span className={`net-timer-badge ${remainingSeconds <= 10 ? 'urgent' : ''}`}>
-                  ⏱️ {remainingSeconds}초
-                </span>
-              )}
-            </div>
-
-            <div className="player-status-bar">
-              {roomPlayers.map((p, idx) => {
-                const isActive =
-                  !p.isEliminated &&
-                  ((activeNetRoom.status === 'PLAYING' && idx === netCurrIdx) ||
-                    (activeNetRoom.status === 'BETTING' && !p.hasPlacedBet));
-                return (
-                  <div
-                    key={p.id}
-                    className={`player-badge-card ${isActive ? 'active-turn-spotlight' : ''} ${
-                      p.isEliminated || p.isBusted ? 'eliminated' : ''
-                    }`}
-                    style={{ borderColor: isActive ? '#fde047' : 'rgba(255,255,255,0.18)' }}
-                  >
-                    <div className="player-badge-top">
-                      <span className="squircle-dot mini" style={{ backgroundColor: p.color }}>
-                        {getShortName(p.name)}
-                      </span>
-                      <strong className={isActive ? 'turn-hero-name' : ''}>
-                        {isActive && '👉 '}
-                        {p.name}
-                        {p.id === mySessionId ? '(나)' : ''}
-                      </strong>
-                      {p.isEliminated ? (
-                        <span className="out-pill">🚫아웃</span>
-                      ) : (
-                        <>
-                          <span className="win-count-pill">🏆{p.wins || 0}</span>
-                          <span className="badge-score">🪙{(p.chips ?? 0).toLocaleString()}</span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <button
-              type="button"
-              className="btn btn-secondary btn-compact-setup"
-              onClick={handleLeaveNetRoom}
-              title="방 나가기"
-            >
-              🚪
-            </button>
-          </div>
-
-          {(amIWaitlisted || roomWaitlist.length > 0) && !amISpectator && (
-            <div className="net-waitlist-strip">
-              {amIWaitlisted
-                ? '⏳ 현재 다음 매치 예약 대기 중입니다!'
-                : `⏳ 다음 매치 예약자 (${roomWaitlist.length}명): ${roomWaitlist.map((w) => w.name).join(', ')}`}
-            </div>
-          )}
-
-          {/* 카지노 펠트 테이블 보드 */}
-          <div className="f7-table-board felt-surface">
-            {isRoundOver || isMatchOver ? (
-              <div className="winner-celebration-top-bar">
-                <div className="winner-celebrate-title">
-                  {activeNetRoom.winnerAnnouncement}
-                </div>
-                <div className="winner-celebrate-actions">
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    style={{ padding: '6px 14px', fontSize: '13px' }}
-                    onClick={handleLeaveNetRoom}
-                  >
-                    🚪 방 나가기
-                  </button>
-                  {isMatchOver ? (
-                    <button
-                      type="button"
-                      className="btn btn-success"
-                      style={{ width: 'auto', padding: '6px 18px', fontSize: '14px' }}
-                      onClick={() => handleStartNetBettingPhase(false, true)}
-                    >
-                      🔄 새 매치 시작 (전원 칩 리셋)
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="btn btn-success"
-                      style={{ width: 'auto', padding: '6px 18px', fontSize: '14px' }}
-                      onClick={() => handleStartNetBettingPhase(true, false)}
-                    >
-                      🔥 다음 라운드 시작 (획득 판돈 누적)
-                    </button>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div key={activeNetRoom.turnNotice} className="f7-notice-banner">
-                {activeNetRoom.turnNotice}
-              </div>
-            )}
-
-            {/* 테이블 중앙: 실물 카드 덱 더미 + 총 판돈(POT) + 버린 카드 더미 */}
-            <div className="table-center-dealer-zone">
-              <div className="deck-pile-stack" title="남은 드로우 덱">
-                <div className="card-back-physical">
-                  <span className="back-brand">FLIP</span>
-                  <span className="back-seven">7</span>
-                </div>
-                <span className="pile-count-tag">{(activeNetRoom.deck || []).length}장</span>
-              </div>
-
-              <div className="center-pot-medallion">
-                {renderCasinoChipStack(activeNetRoom.pot || 0, 'TOTAL POT')}
-              </div>
-
-              <div className="discard-pile-slot" title="버린 카드 더미">
-                {topDiscard ? (
-                  <div className="mini-discard-preview">
-                    <span>{topDiscard.label}</span>
-                  </div>
-                ) : (
-                  <div className="empty-discard-outline">DISCARD</div>
-                )}
-                <span className="pile-count-tag">버림 {(activeNetRoom.discardPile || []).length}</span>
-              </div>
-            </div>
-
-            {/* 플레이어 좌석 그리드 */}
-            <div className="players-seats-grid">
-              {roomPlayers.map((p, idx) => {
-                const isTurn =
-                  !p.isEliminated &&
-                  ((activeNetRoom.status === 'PLAYING' && idx === netCurrIdx) ||
-                    (activeNetRoom.status === 'BETTING' && !p.hasPlacedBet));
-                const liveScore = calculateFlip7RoundScore(p);
-
-                return (
-                  <div
-                    key={p.id}
-                    className={`seat-hand-card ${isTurn ? 'seat-active-turn' : ''} ${
-                      p.isEliminated ? 'seat-eliminated' : ''
-                    } ${
-                      p.roundResult === 'WIN' || p.roundResult === 'FLIP7_WIN'
-                        ? 'seat-winner-glow'
-                        : ''
-                    }`}
-                  >
-                    <div className="seat-header">
-                      <span className="squircle-dot mini" style={{ backgroundColor: p.color }}>
-                        {getShortName(p.name)}
-                      </span>
-                      <strong className={isTurn ? 'seat-hero-name' : ''}>
-                        {isTurn && '🔥 '}
-                        {p.name}
-                        {p.id === mySessionId ? '(나)' : ''}
-                      </strong>
-
-                      {!p.isEliminated && (
-                        <span className="seat-bet-chip">
-                          <i className="mini-chip-dot" />
-                          {p.currentBet.toLocaleString()}
-                        </span>
-                      )}
-
-                      {!p.isEliminated && (
-                        <span className="seat-score-tag">
-                          {p.isBusted ? '💥 BUST' : `${liveScore} PTS`}
-                          {p.isStayed && !p.isBusted ? ' 🔒' : ''}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Flip 7 7칸 홀더 슬롯 */}
-                    {!p.isEliminated && (
-                      <div className="flip7-progress-dots">
-                        {[0, 1, 2, 3, 4, 5, 6].map((slot) => (
-                          <span
-                            key={slot}
-                            className={`f7-slot-dot ${
-                              (p.numberCards || []).length > slot ? 'filled' : ''
-                            }`}
-                          >
-                            {(p.numberCards || [])[slot]?.label ?? '•'}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-
-                    {p.roundResult !== 'NONE' && (
-                      <div style={{ margin: '2px 0' }}>{renderResultBadge(p.roundResult)}</div>
-                    )}
-
-                    <div className="cards-row">
-                      {p.isEliminated ? (
-                        <span className="bet-status-text" style={{ color: '#fca5a5' }}>
-                          🚫 판돈 소진 탈락
-                        </span>
-                      ) : activeNetRoom.status === 'BETTING' ? (
-                        <span className="bet-status-text">
-                          {p.hasPlacedBet ? '✅ 판돈 베팅 완료!' : '⏳ 베팅 대기 중...'}
-                        </span>
-                      ) : (
-                        <>
-                          {(p.numberCards || []).map((card, cIdx) =>
-                            renderFlipCard(
-                              card,
-                              p.isBusted && cIdx === p.numberCards.length - 1
-                            )
-                          )}
-                          {(p.modifierCards || []).map((card) => renderFlipCard(card))}
-                          {p.hasSecondChance && (
-                            <div className="f7-card card-second-chance" title="버스트 1회 방어 카드">
-                              <div className="f7-card-inner-frame">
-                                <span className="f7-card-main" style={{ fontSize: '18px' }}>🛡️</span>
-                                <span className="f7-card-sub">2ND CHANCE</span>
-                              </div>
-                            </div>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {amISpectator && (
-            <div className="f7-bottom-dock">
-              <div className="waiting-dock-msg">
-                👀 관망모드로 실시간 판돈 대결을 시청 중입니다.
-              </div>
-            </div>
-          )}
-
-          {myPlayerObj && !amISpectator && (
-            <div
-              className="f7-bottom-dock"
-              style={{ borderTop: `4px solid ${myPlayerObj.color}` }}
-            >
-              {myPlayerObj.isEliminated ? (
-                <div className="waiting-dock-msg" style={{ color: '#fca5a5' }}>
-                  🚫 보유 판돈이 모두 소진되어 이번 매치에서 아웃되었습니다!
-                </div>
-              ) : (
-                <>
-                  {activeNetRoom.status === 'BETTING' && !myPlayerObj.hasPlacedBet && (
-                    <div className="bet-control-panel">
-                      <div className="bet-presets-row">
-                        {[
-                          activeNetRoom.minBet,
-                          activeNetRoom.minBet * 2,
-                          activeNetRoom.minBet * 4,
-                          myPlayerObj.chips,
-                        ].map((amt, i) => {
-                          const validAmt = Math.min(myPlayerObj.chips, amt);
-                          return (
-                            <button
-                              key={i}
-                              type="button"
-                              className={`preset-chip-btn ${netSelectedBet === validAmt ? 'active' : ''}`}
-                              onClick={() => setNetSelectedBet(validAmt)}
-                            >
-                              <span className="btn-chip-icon">🪙</span>
-                              {i === 3
-                                ? `ALL-IN (${validAmt.toLocaleString()})`
-                                : `${validAmt.toLocaleString()}`}
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <button
-                        type="button"
-                        className="btn btn-arcade-hit"
-                        style={{ width: '100%' }}
-                        onClick={() => handleNetPlaceBet(netSelectedBet)}
-                      >
-                        🪙 {Math.min(myPlayerObj.chips, netSelectedBet).toLocaleString()}칩 베팅하기!
-                      </button>
-                    </div>
-                  )}
-
-                  {activeNetRoom.status === 'BETTING' && myPlayerObj.hasPlacedBet && (
-                    <div className="waiting-dock-msg">
-                      ✅ {myPlayerObj.currentBet.toLocaleString()}칩 베팅 완료! 다른 참가자를 기다리는 중...
-                    </div>
-                  )}
-
-                  {activeNetRoom.status === 'PLAYING' && (
-                    <>
-                      {isMyPendingAction && activeNetRoom.pendingAction ? (
-                        <div className="action-target-panel">
-                          <div className="action-target-title">
-                            ⚡ <strong>{activeNetRoom.pendingAction.cardLabel}</strong> 적용 대상 선택:
-                          </div>
-                          <div className="action-target-buttons">
-                            {roomPlayers
-                              .filter((p) => !p.isEliminated && !p.isBusted && !p.isStayed)
-                              .map((target) => (
-                                <button
-                                  key={target.id}
-                                  type="button"
-                                  className="f7-act-btn target"
-                                  onClick={() => handleNetSelectActionTarget(target.id)}
-                                >
-                                  🎯 {target.name} {target.id === mySessionId ? '(나)' : ''}
-                                </button>
-                              ))}
-                          </div>
-                        </div>
-                      ) : activeNetRoom.pendingAction ? (
-                        <div className="waiting-dock-msg">
-                          ⚡ <strong>{activeNetRoom.pendingAction.actorName}</strong>님이 [{activeNetRoom.pendingAction.cardLabel}] 대상을 선택 중입니다...
-                        </div>
-                      ) : isMyTurn ? (
-                        <div className="f7-actions-row">
-                          <button
-                            type="button"
-                            className="f7-act-btn hit"
-                            onClick={() => handleNetPlayAction('HIT')}
-                          >
-                            🃏 HIT (카드 뒤집기)
-                          </button>
-                          <button
-                            type="button"
-                            className="f7-act-btn stay"
-                            onClick={() => handleNetPlayAction('STAY')}
-                          >
-                            ✋ STAY ({calculateFlip7RoundScore(myPlayerObj)}점 확정)
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="waiting-dock-msg">
-                          ⏳ 현재 <strong>{netCurrPlayer?.name}</strong>님의 차례입니다...
-                        </div>
-                      )}
-                    </>
-                  )}
-
-                  {(isRoundOver || isMatchOver) && (
-                    <div className="waiting-dock-msg">
-                      🏆 상단의 버튼을 눌러 {isMatchOver ? '새 매치를 시작' : '다음 라운드로 판돈을 이어가'}세요!
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    );
+    return renderCatanPlayScreen(activeNetRoom, false);
   }
 
   // =========================================================================
-  // 5. 단독게임(SOLO) - 한 기기에서 2~4인 로컬 대전
+  // 5. 단독게임(SOLO) 설정 및 플레이
   // =========================================================================
-  const currentPlayer = players[currentPlayerIdx] || players[0];
-  const currentBackground =
-    gameState === 'PLAYING' && players.length > 0
-      ? PLAYER_BG_COLORS[currentPlayerIdx % PLAYER_BG_COLORS.length]
-      : PLAYER_BG_COLORS[0];
-  const isSoloRoundOver = gameState === 'ROUND_OVER';
-  const soloTopDiscard =
-    discardPile.length > 0 ? discardPile[discardPile.length - 1] : null;
-
-  return (
-    <div className="f7-container" style={{ background: currentBackground }}>
-      {renderFireworksAndChips()}
-
-      {toast && (
-        <div key={toast.id} className={`f7-toast ${toast.type}`}>
-          {toast.text}
-        </div>
-      )}
-
-      {gameState === 'SETUP' && (
-        <div className="setup-card arcade-panel">
+  if (soloScreen === 'SETUP') {
+    return (
+      <div className="catan-container" style={{ background: WOOD_BG_THEMES[0] }}>
+        <div className="setup-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
             <button
               type="button"
@@ -2783,375 +3332,118 @@ export default function Page4() {
             </button>
             <button
               type="button"
-              className="btn btn-arcade-gold"
+              className="btn btn-secondary"
               style={{ padding: '6px 12px', fontSize: '12px' }}
               onClick={() => setAppMode('HALL_OF_FAME')}
             >
               🏅 명예의 전당
             </button>
           </div>
-          <h1 className="setup-title" style={{ color: '#fde047' }}>🃏 FLIP 7 (단독게임 설정)</h1>
+          <h1 className="setup-title">🏝️ 카탄의 개척자 (단독게임 설정)</h1>
 
           <div className="setting-section">
-            <label className="setting-label">
-              ⏱️ 턴 제한시간 설정: <strong style={{ color: '#fde047' }}>{soloTimeoutSec}초</strong>
-            </label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <span style={{ fontSize: '12px', fontWeight: 700, color: '#cbd5e1' }}>30초</span>
-              <input
-                type="range"
-                min={30}
-                max={180}
-                step={10}
-                value={soloTimeoutSec}
-                style={{ flex: 1 }}
-                onChange={(e) => setSoloTimeoutSec(Number(e.target.value))}
-              />
-              <span style={{ fontSize: '12px', fontWeight: 700, color: '#cbd5e1' }}>180초</span>
-            </div>
-          </div>
-
-          <div className="setting-section">
-            <label className="setting-label">🧭 플레이어 등록 (2~4명)</label>
-            <div className="input-group">
-              <input
-                type="text"
-                className="player-input"
-                placeholder="플레이어 이름 입력 후 추가"
-                value={inputName}
-                onChange={(e) => setInputName(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && addPlayer()}
-              />
-              <button type="button" className="btn btn-primary" onClick={addPlayer}>
-                ➕ 추가
-              </button>
-            </div>
-
-            <div className="player-list">
-              {players.map((player, idx) => (
-                <div key={player.id} className="player-item">
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span
-                      className="squircle-dot"
-                      style={{ backgroundColor: PIECE_COLORS[idx % PIECE_COLORS.length] }}
-                    >
-                      {getShortName(player.name)}
-                    </span>
-                    {player.name}
-                  </span>
-                  <button
-                    type="button"
-                    className="btn-delete"
-                    onClick={() => removePlayer(player.id)}
-                  >
-                    🗑️
-                  </button>
-                </div>
+            <label className="setting-label">👥 참여 인원 수</label>
+            <div className="piece-count-selector" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+              {[2, 3, 4].map((cnt) => (
+                <button
+                  key={cnt}
+                  type="button"
+                  className={`count-btn ${soloPlayerCount === cnt ? 'active' : ''}`}
+                  onClick={() => setSoloPlayerCount(cnt)}
+                >
+                  {cnt}인 대전
+                </button>
               ))}
             </div>
           </div>
 
-          <button
-            type="button"
-            className="btn btn-success"
-            disabled={players.length < 2}
-            onClick={goToMainReady}
-          >
-            ➡️ 순서 정하러 가기 ({players.length}명)
+          <div className="setting-section">
+            <label className="setting-label">💰 매 대국 동일 판돈 (초기 10,000칩)</label>
+            <div className="piece-count-selector">
+              {[1000, 2000, 3000, 5000].map((val) => (
+                <button
+                  key={val}
+                  type="button"
+                  className={`count-btn ${soloAnteBet === val ? 'active' : ''}`}
+                  onClick={() => setSoloAnteBet(val)}
+                >
+                  {val.toLocaleString()}칩
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="setting-section">
+            <label className="setting-label">⭐ 승리 목표 승점</label>
+            <div className="piece-count-selector">
+              {[6, 8, 10, 12].map((vp) => (
+                <button
+                  key={vp}
+                  type="button"
+                  className={`count-btn ${soloTargetVP === vp ? 'active' : ''}`}
+                  onClick={() => setSoloTargetVP(vp)}
+                >
+                  {vp}점 승리
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="setting-section">
+            <label className="setting-label">
+              ⏱️ 턴 제한시간: <strong>{soloTimeoutSec}초</strong>
+            </label>
+            <input
+              type="range"
+              min={30}
+              max={180}
+              step={15}
+              value={soloTimeoutSec}
+              style={{ width: '100%' }}
+              onChange={(e) => setSoloTimeoutSec(Number(e.target.value))}
+            />
+          </div>
+
+          <div className="setting-section">
+            <label className="setting-label">🧭 개척자 이름 설정</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {Array.from({ length: soloPlayerCount }, (_, idx) => {
+                const cMeta = PLAYER_COLOR_META[PLAYER_COLORS[idx]];
+                return (
+                  <div key={idx} className="player-item-a">
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span
+                        className="catan-color-dot"
+                        style={{ backgroundColor: cMeta.hex }}
+                      />
+                      <span>
+                        {idx + 1}번 ({cMeta.label})
+                      </span>
+                    </span>
+                    <input
+                      type="text"
+                      className="player-input"
+                      style={{ maxWidth: '210px', padding: '6px 10px' }}
+                      value={soloNames[idx] || ''}
+                      onChange={(e) => {
+                        const next = [...soloNames];
+                        next[idx] = e.target.value;
+                        setSoloNames(next);
+                      }}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <button type="button" className="btn btn-success" onClick={() => startSoloMatch(false)}>
+            🚀 카탄 개척 시작! (전원 {soloAnteBet.toLocaleString()}칩 동일 베팅)
           </button>
         </div>
-      )}
+      </div>
+    );
+  }
 
-      {gameState === 'READY' && (
-        <div className="order-panel arcade-panel">
-          <div className="order-header">
-            <h2 style={{ margin: 0, fontSize: '20px', color: '#fde047' }}>📋 진행 순서 설정</h2>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              style={{ padding: '8px 14px', fontSize: '13px' }}
-              onClick={shufflePlayersOrder}
-            >
-              🎲 순서 랜덤 섞기
-            </button>
-          </div>
-
-          <div className="order-list">
-            {players.map((player, idx) => (
-              <div key={player.id} className="order-item">
-                <span style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <strong style={{ color: '#38bdf8' }}>{idx + 1}번째</strong>
-                  <span
-                    className="squircle-dot"
-                    style={{ backgroundColor: PIECE_COLORS[idx % PIECE_COLORS.length] }}
-                  >
-                    {getShortName(player.name)}
-                  </span>
-                  {player.name}
-                </span>
-                <div className="order-controls">
-                  <button
-                    type="button"
-                    className="order-btn"
-                    disabled={idx === 0}
-                    onClick={() => movePlayerOrder(idx, 'UP')}
-                  >
-                    ▲
-                  </button>
-                  <button
-                    type="button"
-                    className="order-btn"
-                    disabled={idx === players.length - 1}
-                    onClick={() => movePlayerOrder(idx, 'DOWN')}
-                  >
-                    ▼
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div style={{ display: 'flex', gap: '10px' }}>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => setGameState('SETUP')}
-            >
-              ⬅️ 설정으로
-            </button>
-            <button type="button" className="btn btn-success" onClick={() => startSoloRound(false)}>
-              🚀 FLIP 7 시작!
-            </button>
-          </div>
-        </div>
-      )}
-
-      {(gameState === 'PLAYING' || gameState === 'ROUND_OVER') && currentPlayer && (
-        <div className="play-wrapper compact-tablet-mode">
-          <div className="game-header compact-header">
-            <div className="net-level-timer-box">
-              <span className="net-level-badge">{soloRoundNum}R</span>
-              {!isSoloRoundOver && (
-                <span className={`net-timer-badge ${soloRemainingSec <= 10 ? 'urgent' : ''}`}>
-                  ⏱️ {soloRemainingSec}초
-                </span>
-              )}
-            </div>
-
-            <div className="player-status-bar">
-              {players.map((p, idx) => {
-                const isActive = !isSoloRoundOver && idx === currentPlayerIdx;
-                return (
-                  <div
-                    key={p.id}
-                    className={`player-badge-card ${isActive ? 'active-turn-spotlight' : ''} ${
-                      p.isBusted ? 'eliminated' : ''
-                    }`}
-                    style={{ borderColor: isActive ? '#fde047' : 'rgba(255,255,255,0.18)' }}
-                  >
-                    <div className="player-badge-top">
-                      <span className="squircle-dot mini" style={{ backgroundColor: p.color }}>
-                        {getShortName(p.name)}
-                      </span>
-                      <strong className={isActive ? 'turn-hero-name' : ''}>
-                        {isActive && '👉 '}
-                        {p.name}
-                      </strong>
-                      <span className="win-count-pill">🏆{p.wins}</span>
-                      <span className="badge-score">{p.totalPoints}점</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <button
-              type="button"
-              className="btn btn-secondary btn-compact-setup"
-              onClick={() => setGameState('SETUP')}
-              title="설정/나가기"
-            >
-              🚪
-            </button>
-          </div>
-
-          {/* 카지노 펠트 테이블 보드 */}
-          <div className="f7-table-board felt-surface">
-            {isSoloRoundOver ? (
-              <div className="winner-celebration-top-bar">
-                <div className="winner-celebrate-title">{winnerAnnouncement}</div>
-                <div className="winner-celebrate-actions">
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    style={{ padding: '6px 14px', fontSize: '13px' }}
-                    onClick={() => setGameState('SETUP')}
-                  >
-                    ⚙️ 설정 변경
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-success"
-                    style={{ width: 'auto', padding: '6px 18px', fontSize: '14px' }}
-                    onClick={() => startSoloRound(true)}
-                  >
-                    🔥 다음 라운드 시작 (승수·점수 누적)
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div key={turnNotice} className="f7-notice-banner">
-                {turnNotice}
-              </div>
-            )}
-
-            {/* 중앙 실물 덱 & 버림 더미 */}
-            <div className="table-center-dealer-zone">
-              <div className="deck-pile-stack">
-                <div className="card-back-physical">
-                  <span className="back-brand">FLIP</span>
-                  <span className="back-seven">7</span>
-                </div>
-                <span className="pile-count-tag">{deck.length}장</span>
-              </div>
-
-              <div className="discard-pile-slot">
-                {soloTopDiscard ? (
-                  <div className="mini-discard-preview">
-                    <span>{soloTopDiscard.label}</span>
-                  </div>
-                ) : (
-                  <div className="empty-discard-outline">DISCARD</div>
-                )}
-                <span className="pile-count-tag">버림 {discardPile.length}</span>
-              </div>
-            </div>
-
-            <div className="players-seats-grid">
-              {players.map((p, idx) => {
-                const isTurn = !isSoloRoundOver && idx === currentPlayerIdx;
-                const liveScore = calculateFlip7RoundScore(p);
-
-                return (
-                  <div
-                    key={p.id}
-                    className={`seat-hand-card ${isTurn ? 'seat-active-turn' : ''} ${
-                      p.roundResult === 'WIN' || p.roundResult === 'FLIP7_WIN'
-                        ? 'seat-winner-glow'
-                        : ''
-                    }`}
-                  >
-                    <div className="seat-header">
-                      <span className="squircle-dot mini" style={{ backgroundColor: p.color }}>
-                        {getShortName(p.name)}
-                      </span>
-                      <strong className={isTurn ? 'seat-hero-name' : ''}>
-                        {isTurn && '🔥 '}
-                        {p.name}
-                      </strong>
-                      <span className="seat-score-tag">
-                        {p.isBusted ? '💥 BUST' : `${liveScore} PTS`}
-                        {p.isStayed && !p.isBusted ? ' 🔒' : ''}
-                      </span>
-                    </div>
-
-                    <div className="flip7-progress-dots">
-                      {[0, 1, 2, 3, 4, 5, 6].map((slot) => (
-                        <span
-                          key={slot}
-                          className={`f7-slot-dot ${
-                            (p.numberCards || []).length > slot ? 'filled' : ''
-                          }`}
-                        >
-                          {(p.numberCards || [])[slot]?.label ?? '•'}
-                        </span>
-                      ))}
-                    </div>
-
-                    {p.roundResult !== 'NONE' && (
-                      <div style={{ margin: '2px 0' }}>{renderResultBadge(p.roundResult)}</div>
-                    )}
-
-                    <div className="cards-row">
-                      {(p.numberCards || []).map((card, cIdx) =>
-                        renderFlipCard(
-                          card,
-                          p.isBusted && cIdx === p.numberCards.length - 1
-                        )
-                      )}
-                      {(p.modifierCards || []).map((card) => renderFlipCard(card))}
-                      {p.hasSecondChance && (
-                        <div className="f7-card card-second-chance" title="버스트 1회 방어 카드">
-                          <div className="f7-card-inner-frame">
-                            <span className="f7-card-main" style={{ fontSize: '18px' }}>🛡️</span>
-                            <span className="f7-card-sub">2ND CHANCE</span>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div
-            className="f7-bottom-dock"
-            style={{ borderTop: `4px solid ${currentPlayer.color}` }}
-          >
-            <div className="dock-top-status">
-              <span
-                className="turn-owner-pill large-turn-pill"
-                style={{ backgroundColor: currentPlayer.color }}
-              >
-                👉 {currentPlayer.name}님 차례 · 🏆{currentPlayer.wins}승 · 누적{' '}
-                {currentPlayer.totalPoints}점
-              </span>
-            </div>
-
-            {gameState === 'PLAYING' && (
-              <>
-                {soloPendingAction ? (
-                  <div className="action-target-panel">
-                    <div className="action-target-title">
-                      ⚡ <strong>{soloPendingAction.cardLabel}</strong> 적용 대상 선택:
-                    </div>
-                    <div className="action-target-buttons">
-                      {players
-                        .filter((p) => !p.isBusted && !p.isStayed)
-                        .map((target) => (
-                          <button
-                            key={target.id}
-                            type="button"
-                            className="f7-act-btn target"
-                            onClick={() => handleSoloSelectActionTarget(target.id)}
-                          >
-                            🎯 {target.name}
-                          </button>
-                        ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="f7-actions-row">
-                    <button type="button" className="f7-act-btn hit" onClick={handleSoloHit}>
-                      🃏 HIT (카드 뒤집기)
-                    </button>
-                    <button type="button" className="f7-act-btn stay" onClick={handleSoloStay}>
-                      ✋ STAY ({calculateFlip7RoundScore(currentPlayer)}점 확정)
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
-
-            {isSoloRoundOver && (
-              <div className="waiting-dock-msg">
-                🎉 라운드 종료! <strong>[다음 라운드 시작]</strong> 버튼을 눌러 승부를 이어가세요!
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
+  return renderCatanPlayScreen(soloRoom, true);
 }
