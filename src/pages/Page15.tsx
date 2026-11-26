@@ -1,23 +1,30 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import './Page15.css';
 
 interface StyleConfig {
-  welcomeSize: number;
+  welcomeSizeRem: number;
   welcomeColor: string;
-  titleSize: number;
+  titleSizeRem: number;
   titleColor: string;
-  contentSize: number;
+  contentSizeRem: number;
+  personNameSizeRem: number;
   contentColor: string;
-  dateSize: number;
-  dateColor: string;
-  timeSize: number;
-  timeColor: string;
-  worshipDateSize: number;
-  worshipTimeSize: number;
+  beforeDateSizeRem: number;
+  beforeDateColor: string;
+  beforeTimeSizeRem: number;
+  beforeTimeColor: string;
+  afterDateSizeRem: number;
+  afterDateColor: string;
+  afterTimeSizeRem: number;
+  afterTimeColor: string;
+  worshipDateSizeRem: number;
+  worshipTimeSizeRem: number;
   showWorshipSeconds: boolean;
   textOpacity: number;
   bgColor: string;
   bgOpacity: number;
+  countdownSound: boolean;
+  invertMoodAfter: boolean;
 }
 
 interface ColorPreset {
@@ -26,8 +33,10 @@ interface ColorPreset {
   welcomeColor: string;
   titleColor: string;
   contentColor: string;
-  dateColor: string;
-  timeColor: string;
+  beforeDateColor: string;
+  beforeTimeColor: string;
+  afterDateColor: string;
+  afterTimeColor: string;
 }
 
 interface WorshipItem {
@@ -43,6 +52,19 @@ interface StageInfo {
   label: string;
 }
 
+const KOREAN_COUNTDOWN_WORDS: Record<number, string> = {
+  10: '십',
+  9: '구',
+  8: '팔',
+  7: '칠',
+  6: '육',
+  5: '오',
+  4: '사',
+  3: '삼',
+  2: '이',
+  1: '일',
+};
+
 const COLOR_PRESETS: ColorPreset[] = [
   {
     name: '1. 화이트/검정',
@@ -50,8 +72,10 @@ const COLOR_PRESETS: ColorPreset[] = [
     welcomeColor: '#000000',
     titleColor: '#000000',
     contentColor: '#000000',
-    dateColor: '#000000',
-    timeColor: '#000000',
+    beforeDateColor: '#000000',
+    beforeTimeColor: '#000000',
+    afterDateColor: '#000000',
+    afterTimeColor: '#000000',
   },
   {
     name: '2. 검정/흰색',
@@ -59,8 +83,10 @@ const COLOR_PRESETS: ColorPreset[] = [
     welcomeColor: '#ffffff',
     titleColor: '#ffffff',
     contentColor: '#ffffff',
-    dateColor: '#ffffff',
-    timeColor: '#ffffff',
+    beforeDateColor: '#ffffff',
+    beforeTimeColor: '#ffffff',
+    afterDateColor: '#ffffff',
+    afterTimeColor: '#ffffff',
   },
   {
     name: '3. 네이비 골드',
@@ -68,8 +94,10 @@ const COLOR_PRESETS: ColorPreset[] = [
     welcomeColor: '#ffd166',
     titleColor: '#ffd166',
     contentColor: '#f8fafc',
-    dateColor: '#e2e8f0',
-    timeColor: '#ffd166',
+    beforeDateColor: '#e2e8f0',
+    beforeTimeColor: '#ffd166',
+    afterDateColor: '#ff6b6b',
+    afterTimeColor: '#ffffff',
   },
   {
     name: '4. 포레스트 크림',
@@ -77,17 +105,21 @@ const COLOR_PRESETS: ColorPreset[] = [
     welcomeColor: '#f4f1ea',
     titleColor: '#a7f3d0',
     contentColor: '#f4f1ea',
-    dateColor: '#d1fae5',
-    timeColor: '#f4f1ea',
+    beforeDateColor: '#d1fae5',
+    beforeTimeColor: '#f4f1ea',
+    afterDateColor: '#fde047',
+    afterTimeColor: '#ffffff',
   },
   {
     name: '5. 버건디 아이보리',
-    bgColor: '#3b0d1b',
+    bgColor: '#000000',
     welcomeColor: '#fff8ee',
     titleColor: '#fde68a',
     contentColor: '#fff8ee',
-    dateColor: '#f3d5de',
-    timeColor: '#fde68a',
+    beforeDateColor: '#f3d5de',
+    beforeTimeColor: '#fde68a',
+    afterDateColor: '#67e8f9',
+    afterTimeColor: '#ffffff',
   },
 ];
 
@@ -112,22 +144,131 @@ const DEFAULT_WORSHIP_TEXT = `찬송/
 이는 그를 믿는 자마다 멸망하지 않고 
 영생을 얻게 하려 하심이라(요 3:16)/`;
 
+// HEX 문자열 정규화 (#rrggbb)
+const normalizeHex = (hex: string): string => {
+  const clean = hex.replace('#', '').trim();
+  if (clean.length === 3) {
+    return (
+      '#' +
+      clean
+        .split('')
+        .map((c) => c + c)
+        .join('')
+    ).toLowerCase();
+  }
+  return ('#' + clean.padEnd(6, '0').slice(0, 6)).toLowerCase();
+};
+
+// 색상 반전 유틸 (분위기 반전용: RGB 보색 반전)
+const invertHexColor = (hex: string): string => {
+  const full = normalizeHex(hex).replace('#', '');
+  const num = parseInt(full, 16);
+  const r = 255 - ((num >> 16) & 255);
+  const g = 255 - ((num >> 8) & 255);
+  const b = 255 - (num & 255);
+  return `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+};
+
 // HEX 색상을 RGBA 문자열로 변환
 const hexToRgba = (hex: string, opacityPercent: number): string => {
-  const clean = hex.replace('#', '');
-  const full =
-    clean.length === 3
-      ? clean
-          .split('')
-          .map((c) => c + c)
-          .join('')
-      : clean;
+  const full = normalizeHex(hex).replace('#', '');
   const num = parseInt(full, 16);
   const r = (num >> 16) & 255;
   const g = (num >> 8) & 255;
   const b = num & 255;
   const a = Math.max(0, Math.min(100, opacityPercent)) / 100;
   return `rgba(${r}, ${g}, ${b}, ${a})`;
+};
+
+// "2026.12.31" 및 "0.0.0" (또는 "00:00:00") 형식 파싱
+const parseTargetDateTime = (dateText: string, timeText: string): Date => {
+  const dParts = dateText
+    .trim()
+    .split(/[.:\-/년월일\s]+/)
+    .filter(Boolean)
+    .map(Number);
+  const tParts = timeText
+    .trim()
+    .split(/[.:\-시분초\s]+/)
+    .filter(Boolean)
+    .map(Number);
+
+  const year = dParts[0] || 2026;
+  const month = (dParts[1] || 12) - 1;
+  const day = dParts[2] || 31;
+
+  const hour = tParts[0] || 0;
+  const minute = tParts[1] || 0;
+  const second = tParts[2] || 0;
+
+  return new Date(year, month, day, hour, minute, second, 0);
+};
+
+const formatDotDate = (d: Date): string =>
+  `${d.getFullYear()}.${d.getMonth() + 1}.${d.getDate()}`;
+
+const formatDotTime = (d: Date): string =>
+  `${d.getHours()}.${d.getMinutes()}.${d.getSeconds()}`;
+
+// 컨테이너를 넘지 않도록 글자 크기 자동 축소 보정 래퍼
+const FitTextBox: React.FC<{
+  children: React.ReactNode;
+  className?: string;
+  style?: React.CSSProperties;
+  watchKey?: string | number;
+}> = ({ children, className = '', style, watchKey }) => {
+  const outerRef = useRef<HTMLDivElement | null>(null);
+  const innerRef = useRef<HTMLDivElement | null>(null);
+  const [fitScale, setFitScale] = useState<number>(1);
+
+  const recalcFit = useCallback(() => {
+    const outer = outerRef.current;
+    const inner = innerRef.current;
+    if (!outer || !inner) return;
+
+    inner.style.transform = 'scale(1)';
+    const availW = outer.clientWidth;
+    const availH = outer.clientHeight;
+    if (availW <= 0 || availH <= 0) return;
+
+    const neededW = inner.scrollWidth;
+    const neededH = inner.scrollHeight;
+
+    if (neededW > availW || neededH > availH) {
+      const ratioW = availW / Math.max(1, neededW);
+      const ratioH = availH / Math.max(1, neededH);
+      setFitScale(Math.max(0.2, Math.min(1, ratioW, ratioH)));
+    } else {
+      setFitScale(1);
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    recalcFit();
+  }, [recalcFit, watchKey, style?.fontSize]);
+
+  useEffect(() => {
+    const outer = outerRef.current;
+    if (!outer) return;
+    const ro = new ResizeObserver(recalcFit);
+    ro.observe(outer);
+    return () => ro.disconnect();
+  }, [recalcFit]);
+
+  return (
+    <div ref={outerRef} className="fit-text-outer">
+      <div
+        ref={innerRef}
+        className={`fit-text-inner ${className}`}
+        style={{
+          ...style,
+          transform: fitScale < 1 ? `scale(${fitScale})` : undefined,
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
 };
 
 // 캔버스 폭죽 효과 컴포넌트
@@ -230,23 +371,34 @@ export default function Page15() {
   const [welcomeInput, setWelcomeInput] = useState<string>(DEFAULT_WELCOME_TEXT);
   const [worshipInput, setWorshipInput] = useState<string>(DEFAULT_WORSHIP_TEXT);
 
+  // 카운트다운 목표 일시 설정 (예: 날짜 2026.12.31, 시간 0.0.0)
+  const [targetDateInput, setTargetDateInput] = useState<string>('2027.1.1');
+  const [targetTimeInput, setTargetTimeInput] = useState<string>('0.0.0');
+
   const [styles, setStyles] = useState<StyleConfig>({
-    welcomeSize: 115,
+    welcomeSizeRem: 7.2,
     welcomeColor: '#ffffff',
-    titleSize: 58,
+    titleSizeRem: 5,
     titleColor: '#ffffff',
-    contentSize: 114,
+    contentSizeRem: 5.8,
+    personNameSizeRem: 8.5,
     contentColor: '#ffffff',
-    dateSize: 196,
-    dateColor: '#ffffff',
-    timeSize: 239,
-    timeColor: '#ffffff',
-    worshipDateSize: 52,
-    worshipTimeSize: 44,
-    showWorshipSeconds: false,
+    beforeDateSizeRem: 8.5,
+    beforeDateColor: '#ffffff',
+    beforeTimeSizeRem: 14.5,
+    beforeTimeColor: '#ffffff',
+    afterDateSizeRem: 16.5,
+    afterDateColor: '#e04110',
+    afterTimeSizeRem: 8.0,
+    afterTimeColor: '#ffffff',
+    worshipDateSizeRem: 3.2,
+    worshipTimeSizeRem: 2.6,
+    showWorshipSeconds: true,
     textOpacity: 100,
     bgColor: '#000000',
     bgOpacity: 100,
+    countdownSound: true,
+    invertMoodAfter: false,
   });
 
   // 미리보기 컨테이너 너비에 맞춰 1920x1080 기준 스케일을 자동 계산
@@ -276,13 +428,16 @@ export default function Page15() {
   const [simOffsetMs, setSimOffsetMs] = useState<number | null>(null);
   const [simStartRealMs, setSimStartRealMs] = useState<number>(0);
 
-  // 현재 실제 연도 기준 (올해 -> 내년)
-  const baseYear = useMemo(() => new Date().getFullYear(), []);
-
   // 화면 단계 인덱스 및 미리보기 상태
   const [stageIndex, setStageIndex] = useState<number>(0);
   const [previewStageIndex, setPreviewStageIndex] = useState<number>(0);
   const [fireworksTriggered, setFireworksTriggered] = useState<boolean>(false);
+
+  // 설정된 목표 일시 Date 객체 (기준 시점)
+  const targetDateTime = useMemo(
+    () => parseTargetDateTime(targetDateInput, targetTimeInput),
+    [targetDateInput, targetTimeInput]
+  );
 
   // 설정 1 파싱: '/' 기준으로 환영 멘트 단계 분리
   const welcomeSlides = useMemo(() => {
@@ -313,17 +468,20 @@ export default function Page15() {
 
   // 전체 진행 스테이지 목록 생성
   const stages: StageInfo[] = useMemo(() => {
+    const tDateLabel = formatDotDate(targetDateTime);
+    const tTimeLabel = formatDotTime(targetDateTime);
+
     const list: StageInfo[] = [
-      { type: 'clock', label: `${baseYear}.12.31 시계 화면` },
-      { type: 'countdown', label: `카운트다운` },
-      { type: 'midnight', label: `${baseYear + 1}.1.1 00:00:00 자정` },
+      { type: 'clock', label: `기준전 · 시계 (${tDateLabel})` },
+      { type: 'countdown', label: `기준전 · 카운트다운` },
+      { type: 'midnight', label: `기준후 · 도달 (${tDateLabel} ${tTimeLabel})` },
     ];
 
     welcomeSlides.forEach((_, idx) => {
       list.push({
         type: 'welcome',
         welcomeIdx: idx,
-        label: `환영멘트 ${idx + 1}`,
+        label: `기준후 · 환영멘트 ${idx + 1}`,
       });
     });
 
@@ -333,7 +491,7 @@ export default function Page15() {
           type: 'worship',
           worshipIdx: wIdx,
           slideIdx: -1,
-          label: `${item.title} (제목)`,
+          label: `예배 · ${item.title} (제목)`,
         });
       } else {
         item.slides.forEach((_, sIdx) => {
@@ -341,14 +499,14 @@ export default function Page15() {
             type: 'worship',
             worshipIdx: wIdx,
             slideIdx: sIdx,
-            label: `${item.title} (${sIdx + 1}/${item.slides.length})`,
+            label: `예배 · ${item.title} (${sIdx + 1}/${item.slides.length})`,
           });
         });
       }
     });
 
     return list;
-  }, [baseYear, welcomeSlides, worshipItems]);
+  }, [targetDateTime, welcomeSlides, worshipItems]);
 
   // 각 예배 챕터(worshipIdx)가 전체 stages에서 시작하는 인덱스 매핑
   const worshipStartStageIndices = useMemo(() => {
@@ -372,7 +530,27 @@ export default function Page15() {
     return now;
   }, [now, simOffsetMs, simStartRealMs]);
 
-  // 100ms 단위 타이머 루프 & 자동 전환 로직
+  // 카운트다운 음성 읽기 (10 ~ 1만 읽고 0은 읽지 않음)
+  const lastSpokenNumRef = useRef<number | null>(null);
+  const speakCountdownNumber = useCallback(
+    (num: number) => {
+      if (!styles.countdownSound) return;
+      if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+      if (num < 1 || num > 10) return;
+
+      const word = KOREAN_COUNTDOWN_WORDS[num];
+      if (!word) return;
+
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(word);
+      utter.lang = 'ko-KR';
+      utter.rate = 1.05;
+      window.speechSynthesis.speak(utter);
+    },
+    [styles.countdownSound]
+  );
+
+  // 100ms 단위 타이머 루프 & 목표 시점 기반 자동 전환 로직
   useEffect(() => {
     const timer = setInterval(() => {
       const realNow = new Date();
@@ -383,35 +561,25 @@ export default function Page15() {
           ? new Date(simOffsetMs + (realNow.getTime() - simStartRealMs))
           : realNow;
 
-      const year = activeTime.getFullYear();
-      const month = activeTime.getMonth() + 1;
-      const date = activeTime.getDate();
-      const hours = activeTime.getHours();
-      const minutes = activeTime.getMinutes();
-      const seconds = activeTime.getSeconds();
+      const diffMs = targetDateTime.getTime() - activeTime.getTime();
 
-      // 올해 12월 31일 23:59:50 ~ 23:59:59 -> 자동으로 카운트다운 진입
-      if (
-        year === baseYear &&
-        month === 12 &&
-        date === 31 &&
-        hours === 23 &&
-        minutes === 59 &&
-        seconds >= 50
-      ) {
+      // 목표 시각 10초 전 ~ 0초 초과 구간에서 카운트다운 진입
+      if (diffMs > 0 && diffMs <= 10500) {
         setStageIndex((prev) => (prev < 1 ? 1 : prev));
         setPreviewStageIndex((prev) => (prev < 1 ? 1 : prev));
+
+        const secLeft = Math.ceil(diffMs / 1000);
+        if (secLeft >= 1 && secLeft <= 10 && lastSpokenNumRef.current !== secLeft) {
+          lastSpokenNumRef.current = secLeft;
+          if (!isSettingsOpen) {
+            speakCountdownNumber(secLeft);
+          }
+        }
       }
 
-      // 내년 1월 1일 00:00:00 정각 -> 자동으로 자정 화면 및 폭죽 실행
-      if (
-        year === baseYear + 1 &&
-        month === 1 &&
-        date === 1 &&
-        hours === 0 &&
-        minutes === 0 &&
-        seconds === 0
-      ) {
+      // 목표 시각 도달 시 자정/목표도달 화면 및 폭죽 실행 (0은 읽지 않음)
+      if (diffMs <= 0 && diffMs > -2000) {
+        lastSpokenNumRef.current = null;
         setStageIndex((prev) => (prev < 2 ? 2 : prev));
         setPreviewStageIndex((prev) => (prev < 2 ? 2 : prev));
         setFireworksTriggered(true);
@@ -419,7 +587,7 @@ export default function Page15() {
     }, 100);
 
     return () => clearInterval(timer);
-  }, [baseYear, simOffsetMs, simStartRealMs]);
+  }, [targetDateTime, simOffsetMs, simStartRealMs, isSettingsOpen, speakCountdownNumber]);
 
   // 폭죽 자동 종료 타이머
   useEffect(() => {
@@ -436,14 +604,17 @@ export default function Page15() {
       welcomeColor: preset.welcomeColor,
       titleColor: preset.titleColor,
       contentColor: preset.contentColor,
-      dateColor: preset.dateColor,
-      timeColor: preset.timeColor,
+      beforeDateColor: preset.beforeDateColor,
+      beforeTimeColor: preset.beforeTimeColor,
+      afterDateColor: preset.afterDateColor,
+      afterTimeColor: preset.afterTimeColor,
     }));
   };
 
   // a. 실제카운트 버튼
   const handleStartRealCount = () => {
     const realNow = new Date();
+    lastSpokenNumRef.current = null;
     setNow(realNow);
     setSimOffsetMs(null);
     setStageIndex(0);
@@ -452,10 +623,11 @@ export default function Page15() {
     setIsSettingsOpen(false);
   };
 
-  // b. 연습카운트 버튼 (올해 12/31 23:59:40부터 시작)
+  // b. 연습카운트 버튼 (설정된 목표 시각 20초 전부터 시작)
   const handleStartPracticeCount = () => {
-    const target = new Date(baseYear, 11, 31, 23, 59, 40, 0);
-    setSimOffsetMs(target.getTime());
+    const practiceStart = new Date(targetDateTime.getTime() - 20 * 1000);
+    lastSpokenNumRef.current = null;
+    setSimOffsetMs(practiceStart.getTime());
     setSimStartRealMs(Date.now());
     setNow(new Date());
     setStageIndex(0);
@@ -541,6 +713,13 @@ export default function Page15() {
     }
   };
 
+  // 미리보기 전용 전체 단계 순환 (전/후 모든 상황 순서대로 탐색)
+  const handlePreviewStep = (delta: number) => {
+    if (stages.length === 0) return;
+    const nextIdx = (previewStageIndex + delta + stages.length) % stages.length;
+    jumpToStage(nextIdx, true);
+  };
+
   // 날짜 및 시간 포맷팅
   const formatTimeParts = (d: Date) => {
     const yyyy = d.getFullYear();
@@ -561,7 +740,9 @@ export default function Page15() {
       ? `${String(displayHour12).padStart(2, '0')}:${min}`
       : `${hh}:${min}`;
 
-    const countdownNum = d.getSeconds() === 0 ? 0 : 60 - d.getSeconds();
+    const remainingMs = Math.max(0, targetDateTime.getTime() - d.getTime());
+    const countdownNum =
+      remainingMs <= 0 ? 0 : Math.min(10, Math.ceil(remainingMs / 1000));
 
     return {
       dateStr: `${yyyy}.${mm}.${dd}`,
@@ -576,148 +757,211 @@ export default function Page15() {
     const stage = stages[currentIdx] || stages[0];
     const { dateStr, fullTimeStr, hourMinStr, countdownNum } = formatTimeParts(currentDisplayTime);
 
-    // 수정 2: 현재 제목(챕터) 안에서 내용이 바뀌는 슬라이드 순번(1부터 시작)
+    // 기준 시점 전/후 판별: 실제 시간이 목표 시각을 지났거나, 스테이지가 도달/환영/예배 단계인 경우 기준 후로 처리
+    const isAfterState =
+      currentDisplayTime.getTime() >= targetDateTime.getTime() ||
+      stage.type === 'midnight' ||
+      stage.type === 'welcome' ||
+      stage.type === 'worship';
+
+    // 반전분위기 적용 여부 (기준 시점 이후 + 반전분위기 ON)
+    const shouldInvertMood = isAfterState && styles.invertMoodAfter;
+    const resolveColor = (hex: string) => (shouldInvertMood ? invertHexColor(hex) : hex);
+
+    const activeDateSizeRem = isAfterState
+      ? styles.afterDateSizeRem
+      : styles.beforeDateSizeRem;
+    const activeTimeSizeRem = isAfterState
+      ? styles.afterTimeSizeRem
+      : styles.beforeTimeSizeRem;
+
+    const activeDateColor = resolveColor(
+      isAfterState ? styles.afterDateColor : styles.beforeDateColor
+    );
+    const activeTimeColor = resolveColor(
+      isAfterState ? styles.afterTimeColor : styles.beforeTimeColor
+    );
+    const activeWelcomeColor = resolveColor(styles.welcomeColor);
+    const activeTitleColor = resolveColor(styles.titleColor);
+    const activeContentColor = resolveColor(styles.contentColor);
+    const activeBgColor = resolveColor(styles.bgColor);
+
+    // 미리보기에서 기준후(midnight) 단계를 볼 때 목표 일시를 직관적으로 표시
+    const displayDateText =
+      isPreview && stage.type === 'midnight' ? formatDotDate(targetDateTime) : dateStr;
+    const displayClockText =
+      isPreview && stage.type === 'midnight'
+        ? `${String(targetDateTime.getHours()).padStart(2, '0')}:${String(
+            targetDateTime.getMinutes()
+          ).padStart(2, '0')}:${String(targetDateTime.getSeconds()).padStart(2, '0')}`
+        : fullTimeStr;
+
     const currentSlideDisplayNum =
       stage.type === 'worship' && stage.slideIdx !== undefined && stage.slideIdx >= 0
         ? stage.slideIdx + 1
         : 1;
 
-    const bgRgba = hexToRgba(styles.bgColor, styles.bgOpacity);
+    const bgRgba = hexToRgba(activeBgColor, styles.bgOpacity);
     const contentOpacityVal = Math.max(0, Math.min(100, styles.textOpacity)) / 100;
+
+    // 예배 슬라이드 본문이 2줄 미만이면 '인명'으로 인식
+    const currentSlideText =
+      stage.type === 'worship' &&
+      stage.worshipIdx !== undefined &&
+      stage.slideIdx !== undefined &&
+      stage.slideIdx >= 0
+        ? worshipItems[stage.worshipIdx]?.slides[stage.slideIdx] || ''
+        : '';
+
+    const lineCount = currentSlideText.split(/\r?\n/).filter((l) => l.trim().length > 0).length;
+    const isPersonName = lineCount < 2;
+    const bodyFontSizeRem = isPersonName ? styles.personNameSizeRem : styles.contentSizeRem;
 
     const stageBody = (
       <div
-        className={`presentation-container ${isPreview ? 'is-preview' : 'is-fullscreen'}`}
+        className={`presentation-container ${isPreview ? 'is-preview' : 'is-fullscreen'} ${
+          shouldInvertMood ? 'is-inverted-mood' : ''
+        }`}
         style={{ backgroundColor: bgRgba }}
       >
-        {!isPreview && <FireworksCanvas active={fireworksTriggered} />}
+        <FireworksCanvas active={fireworksTriggered} />
 
         {stage.type === 'worship' && stage.worshipIdx !== undefined ? (
           <div className="worship-flex-layout" style={{ opacity: contentOpacityVal }}>
             <div className="worship-top-header">
-              <span
+              <FitTextBox
                 className="worship-header-date"
                 style={{
-                  fontSize: `${styles.worshipDateSize}px`,
-                  color: styles.dateColor,
+                  fontSize: `${styles.worshipDateSizeRem}rem`,
+                  color: activeDateColor,
                 }}
+                watchKey={displayDateText}
               >
-                {currentDisplayTime.getFullYear() > baseYear
-                  ? dateStr
-                  : `${baseYear + 1}.1.1`}
-              </span>
-              <span
+                {displayDateText}
+              </FitTextBox>
+              <FitTextBox
                 className="worship-header-time"
                 style={{
-                  fontSize: `${styles.worshipTimeSize}px`,
-                  color: styles.timeColor,
+                  fontSize: `${styles.worshipTimeSizeRem}rem`,
+                  color: activeTimeColor,
                 }}
+                watchKey={styles.showWorshipSeconds ? fullTimeStr : hourMinStr}
               >
                 {styles.showWorshipSeconds ? fullTimeStr : hourMinStr}
-              </span>
+              </FitTextBox>
             </div>
 
             <div className="worship-title-section">
-              <div
+              <FitTextBox
                 className="display-worship-title"
                 style={{
-                  fontSize: `${styles.titleSize}px`,
-                  color: styles.titleColor,
+                  fontSize: `${styles.titleSizeRem}rem`,
+                  color: activeTitleColor,
                 }}
+                watchKey={worshipItems[stage.worshipIdx]?.title}
               >
                 {worshipItems[stage.worshipIdx]?.title}
-              </div>
+              </FitTextBox>
             </div>
 
             <div className="worship-body-section">
               {stage.slideIdx !== undefined && stage.slideIdx >= 0 && (
-                <div
-                  className="display-worship-body"
+                <FitTextBox
+                  className={`display-worship-body ${isPersonName ? 'is-person-name' : ''}`}
                   style={{
-                    fontSize: `${styles.contentSize}px`,
-                    color: styles.contentColor,
+                    fontSize: `${bodyFontSizeRem}rem`,
+                    color: activeContentColor,
                   }}
+                  watchKey={currentSlideText}
                 >
-                  {worshipItems[stage.worshipIdx]?.slides[stage.slideIdx]}
-                </div>
+                  {currentSlideText}
+                </FitTextBox>
               )}
             </div>
           </div>
         ) : (
           <div className="presentation-content" style={{ opacity: contentOpacityVal }}>
-            <div
+            <FitTextBox
               className="display-date"
               style={{
-                fontSize: `${
-                  stage.type === 'midnight' ? styles.dateSize * 1.35 : styles.dateSize
-                }px`,
-                color: styles.dateColor,
+                fontSize: `${activeDateSizeRem}rem`,
+                color: activeDateColor,
               }}
+              watchKey={displayDateText}
             >
-              {simOffsetMs === null && stage.type === 'clock'
-                ? dateStr
-                : stage.type === 'clock' || stage.type === 'countdown'
-                ? `${baseYear}.12.31`
-                : stage.type === 'midnight' || stage.type === 'welcome'
-                ? `${baseYear + 1}.1.1`
-                : dateStr}
-            </div>
+              {displayDateText}
+            </FitTextBox>
 
             {stage.type === 'clock' && (
-              <div
+              <FitTextBox
                 className="display-main-clock"
-                style={{ fontSize: `${styles.timeSize * 1.35}px`, color: styles.timeColor }}
+                style={{ fontSize: `${activeTimeSizeRem}rem`, color: activeTimeColor }}
+                watchKey={displayClockText}
               >
-                {fullTimeStr}
-              </div>
+                {displayClockText}
+              </FitTextBox>
             )}
 
             {stage.type === 'countdown' && (
               <>
-                <div
+                <FitTextBox
                   className="display-sub-clock"
-                  style={{ fontSize: `${styles.timeSize * 0.55}px`, color: styles.timeColor }}
+                  style={{
+                    fontSize: `${Math.max(1.5, activeTimeSizeRem * 0.45)}rem`,
+                    color: activeTimeColor,
+                  }}
+                  watchKey={displayClockText}
                 >
-                  {fullTimeStr}
-                </div>
-                <div
+                  {displayClockText}
+                </FitTextBox>
+                <FitTextBox
                   className="display-countdown-number"
-                  style={{ fontSize: `${styles.timeSize * 2.4}px`, color: styles.timeColor }}
+                  style={{
+                    fontSize: `${Math.max(4, activeTimeSizeRem * 1.35)}rem`,
+                    color: activeTimeColor,
+                  }}
+                  watchKey={countdownNum}
                 >
                   {countdownNum}
-                </div>
+                </FitTextBox>
               </>
             )}
 
             {stage.type === 'midnight' && (
-              <div
+              <FitTextBox
                 className="display-midnight-clock"
-                style={{ fontSize: `${styles.timeSize * 0.85}px`, color: styles.timeColor }}
+                style={{
+                  fontSize: `${Math.max(2, activeTimeSizeRem * 0.8)}rem`,
+                  color: activeTimeColor,
+                }}
+                watchKey={displayClockText}
               >
-                {fullTimeStr}
-              </div>
+                {displayClockText}
+              </FitTextBox>
             )}
 
             {stage.type === 'welcome' && stage.welcomeIdx !== undefined && (
               <>
-                <div
+                <FitTextBox
                   className="display-welcome-clock"
                   style={{
-                    fontSize: `${styles.timeSize * 0.65}px`,
-                    color: styles.timeColor,
+                    fontSize: `${Math.max(1.8, activeTimeSizeRem * 0.6)}rem`,
+                    color: activeTimeColor,
                   }}
+                  watchKey={displayClockText}
                 >
-                  {fullTimeStr}
-                </div>
-                <div
+                  {displayClockText}
+                </FitTextBox>
+                <FitTextBox
                   className="display-welcome-text"
                   style={{
-                    fontSize: `${styles.welcomeSize}px`,
-                    color: styles.welcomeColor,
+                    fontSize: `${styles.welcomeSizeRem}rem`,
+                    color: activeWelcomeColor,
                   }}
+                  watchKey={welcomeSlides[stage.welcomeIdx]}
                 >
                   {welcomeSlides[stage.welcomeIdx]}
-                </div>
+                </FitTextBox>
               </>
             )}
           </div>
@@ -788,7 +1032,7 @@ export default function Page15() {
         <div className="settings-page">
           <div className="settings-header">
             <h1>
-              설정창 ({baseYear} → {baseYear + 1})
+              설정창 (목표: {formatDotDate(targetDateTime)} {formatDotTime(targetDateTime)})
             </h1>
             <div className="header-actions">
               <button type="button" className="btn-secondary" onClick={handleStartRealCount}>
@@ -805,6 +1049,35 @@ export default function Page15() {
 
           <div className="settings-grid">
             <div className="settings-col-left">
+              <div className="setting-box">
+                <div className="setting-label">
+                  <strong>카운트다운 시점</strong>
+                  <span>날짜(예: 2027.1.1) · 시간(예: 0.0.0)</span>
+                </div>
+                <div className="target-datetime-row">
+                  <div className="style-row">
+                    <label>목표날짜:</label>
+                    <input
+                      type="text"
+                      className="text-input-sm"
+                      value={targetDateInput}
+                      onChange={(e) => setTargetDateInput(e.target.value)}
+                      placeholder="2027.1.1"
+                    />
+                  </div>
+                  <div className="style-row">
+                    <label>목표시간:</label>
+                    <input
+                      type="text"
+                      className="text-input-sm"
+                      value={targetTimeInput}
+                      onChange={(e) => setTargetTimeInput(e.target.value)}
+                      placeholder="0.0.0"
+                    />
+                  </div>
+                </div>
+              </div>
+
               <div className="setting-box">
                 <div className="setting-label">
                   <strong>설정 1</strong> <span>환영멘트 입력 (/ 로 단계 구분)</span>
@@ -826,7 +1099,7 @@ export default function Page15() {
                   className="setting-textarea worship-textarea"
                   value={worshipInput}
                   onChange={(e) => setWorshipInput(e.target.value)}
-                  placeholder="찬송/&#10;가사 1절/&#10;가사 2절/&#10;;&#10;기도&#10;홍길동 집사/"
+                  placeholder="찬송/&#10;가사 1절/&#10;가사 2절/&#10;;&#10;기도/&#10;홍길동 집사/"
                 />
               </div>
             </div>
@@ -834,7 +1107,7 @@ export default function Page15() {
             <div className="settings-col-right">
               <div className="setting-box style-box">
                 <div className="setting-label">
-                  <strong>설정 3</strong> <span>글자 크기 · 색상 · 투명도 설정</span>
+                  <strong>설정 3</strong> <span>글자 크기(rem) · 전/후 색상 · 반전분위기 · 음성</span>
                 </div>
 
                 <div className="preset-row">
@@ -857,16 +1130,31 @@ export default function Page15() {
                       <span>{preset.name}</span>
                     </button>
                   ))}
+
+                  <button
+                    type="button"
+                    className={`invert-mood-btn ${styles.invertMoodAfter ? 'is-active' : ''}`}
+                    onClick={() =>
+                      setStyles((prev) => ({
+                        ...prev,
+                        invertMoodAfter: !prev.invertMoodAfter,
+                      }))
+                    }
+                    title="기준 시점 이후 배경색과 글자색을 반전하여 분위기를 바꿉니다"
+                  >
+                    🌓 반전분위기 {styles.invertMoodAfter ? 'ON' : 'OFF'}
+                  </button>
                 </div>
 
                 <div className="style-grid-two-col">
                   <div className="style-row">
-                    <label>환영멘트크기:</label>
+                    <label>환영멘트(rem):</label>
                     <input
                       type="number"
-                      value={styles.welcomeSize}
+                      step="0.2"
+                      value={styles.welcomeSizeRem}
                       onChange={(e) =>
-                        setStyles({ ...styles, welcomeSize: Number(e.target.value) })
+                        setStyles({ ...styles, welcomeSizeRem: Number(e.target.value) })
                       }
                     />
                     <input
@@ -877,12 +1165,13 @@ export default function Page15() {
                   </div>
 
                   <div className="style-row">
-                    <label>제목크기:</label>
+                    <label>제목크기(rem):</label>
                     <input
                       type="number"
-                      value={styles.titleSize}
+                      step="0.2"
+                      value={styles.titleSizeRem}
                       onChange={(e) =>
-                        setStyles({ ...styles, titleSize: Number(e.target.value) })
+                        setStyles({ ...styles, titleSizeRem: Number(e.target.value) })
                       }
                     />
                     <input
@@ -893,12 +1182,13 @@ export default function Page15() {
                   </div>
 
                   <div className="style-row">
-                    <label>내용크기:</label>
+                    <label>내용크기(rem):</label>
                     <input
                       type="number"
-                      value={styles.contentSize}
+                      step="0.2"
+                      value={styles.contentSizeRem}
                       onChange={(e) =>
-                        setStyles({ ...styles, contentSize: Number(e.target.value) })
+                        setStyles({ ...styles, contentSizeRem: Number(e.target.value) })
                       }
                     />
                     <input
@@ -909,34 +1199,91 @@ export default function Page15() {
                   </div>
 
                   <div className="style-row">
-                    <label>날짜크기:</label>
+                    <label>인명크기(rem):</label>
                     <input
                       type="number"
-                      value={styles.dateSize}
+                      step="0.2"
+                      value={styles.personNameSizeRem}
                       onChange={(e) =>
-                        setStyles({ ...styles, dateSize: Number(e.target.value) })
+                        setStyles({ ...styles, personNameSizeRem: Number(e.target.value) })
+                      }
+                    />
+                    <span className="hint-badge">2줄미만</span>
+                  </div>
+
+                  <div className="style-row">
+                    <label>전날짜크기:</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      value={styles.beforeDateSizeRem}
+                      onChange={(e) =>
+                        setStyles({ ...styles, beforeDateSizeRem: Number(e.target.value) })
                       }
                     />
                     <input
                       type="color"
-                      value={styles.dateColor}
-                      onChange={(e) => setStyles({ ...styles, dateColor: e.target.value })}
+                      value={styles.beforeDateColor}
+                      onChange={(e) =>
+                        setStyles({ ...styles, beforeDateColor: e.target.value })
+                      }
                     />
                   </div>
 
                   <div className="style-row">
-                    <label>시간크기:</label>
+                    <label>전시간크기:</label>
                     <input
                       type="number"
-                      value={styles.timeSize}
+                      step="0.5"
+                      value={styles.beforeTimeSizeRem}
                       onChange={(e) =>
-                        setStyles({ ...styles, timeSize: Number(e.target.value) })
+                        setStyles({ ...styles, beforeTimeSizeRem: Number(e.target.value) })
                       }
                     />
                     <input
                       type="color"
-                      value={styles.timeColor}
-                      onChange={(e) => setStyles({ ...styles, timeColor: e.target.value })}
+                      value={styles.beforeTimeColor}
+                      onChange={(e) =>
+                        setStyles({ ...styles, beforeTimeColor: e.target.value })
+                      }
+                    />
+                  </div>
+
+                  <div className="style-row">
+                    <label>후날짜크기:</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      value={styles.afterDateSizeRem}
+                      onChange={(e) =>
+                        setStyles({ ...styles, afterDateSizeRem: Number(e.target.value) })
+                      }
+                    />
+                    <input
+                      type="color"
+                      value={styles.afterDateColor}
+                      onChange={(e) =>
+                        setStyles({ ...styles, afterDateColor: e.target.value })
+                      }
+                    />
+                  </div>
+
+                  <div className="style-row">
+                    <label>후시간크기:</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      value={styles.afterTimeSizeRem}
+                      onChange={(e) =>
+                        setStyles({ ...styles, afterTimeSizeRem: Number(e.target.value) })
+                      }
+                    />
+                    <input
+                      type="color"
+                      value={styles.afterTimeColor}
+                      onChange={(e) =>
+                        setStyles({ ...styles, afterTimeColor: e.target.value })
+                      }
                     />
                   </div>
 
@@ -951,23 +1298,25 @@ export default function Page15() {
                   </div>
 
                   <div className="style-row">
-                    <label>예배날짜크기:</label>
+                    <label>예배날짜(rem):</label>
                     <input
                       type="number"
-                      value={styles.worshipDateSize}
+                      step="0.2"
+                      value={styles.worshipDateSizeRem}
                       onChange={(e) =>
-                        setStyles({ ...styles, worshipDateSize: Number(e.target.value) })
+                        setStyles({ ...styles, worshipDateSizeRem: Number(e.target.value) })
                       }
                     />
                   </div>
 
                   <div className="style-row">
-                    <label>예배시간크기:</label>
+                    <label>예배시간(rem):</label>
                     <input
                       type="number"
-                      value={styles.worshipTimeSize}
+                      step="0.2"
+                      value={styles.worshipTimeSizeRem}
                       onChange={(e) =>
-                        setStyles({ ...styles, worshipTimeSize: Number(e.target.value) })
+                        setStyles({ ...styles, worshipTimeSizeRem: Number(e.target.value) })
                       }
                     />
                   </div>
@@ -982,7 +1331,18 @@ export default function Page15() {
                         setStyles({ ...styles, showWorshipSeconds: e.target.checked })
                       }
                     />
-                    <span>예배순서 상단 시간에 초 표시 (시:분:초)</span>
+                    <span>예배순서 상단 시간에 초 표시</span>
+                  </label>
+
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={styles.countdownSound}
+                      onChange={(e) =>
+                        setStyles({ ...styles, countdownSound: e.target.checked })
+                      }
+                    />
+                    <span>카운트다운 음성 (십~일, 0 제외)</span>
                   </label>
                 </div>
 
@@ -999,7 +1359,7 @@ export default function Page15() {
                   />
                   <span className="opacity-val">{styles.bgOpacity}%</span>
 
-                  <label style={{ marginLeft: '10px' }}>글자투명도:</label>
+                  <label className="opacity-sub-label">글자투명도:</label>
                   <input
                     type="range"
                     min={10}
@@ -1016,10 +1376,31 @@ export default function Page15() {
               <div className="setting-box preview-box-wrapper">
                 <div className="setting-label">
                   <strong>설정 4</strong>{' '}
-                  <span>미리보기창 ({stages[previewStageIndex]?.label})</span>
+                  <span>
+                    미리보기 ({previewStageIndex + 1}/{stages.length} ·{' '}
+                    {stages[previewStageIndex]?.label})
+                  </span>
                 </div>
-                <div ref={previewBoxRef} className="preview-viewport">
-                  {renderPresentationScreen(previewStageIndex, true)}
+                <div className="preview-stage-nav">
+                  <button
+                    type="button"
+                    className="preview-step-btn"
+                    onClick={() => handlePreviewStep(-1)}
+                    title="이전 상황 미리보기"
+                  >
+                    ◀ 전
+                  </button>
+                  <div ref={previewBoxRef} className="preview-viewport">
+                    {renderPresentationScreen(previewStageIndex, true)}
+                  </div>
+                  <button
+                    type="button"
+                    className="preview-step-btn"
+                    onClick={() => handlePreviewStep(1)}
+                    title="다음 상황 미리보기"
+                  >
+                    후 ▶
+                  </button>
                 </div>
               </div>
 
